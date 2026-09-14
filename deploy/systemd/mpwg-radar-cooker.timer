@@ -1,0 +1,13 @@
+[Unit]
+Description=Run MPWG radar cooker every few minutes
+Requires=mpwg-radar-cooker.service
+
+[Timer]
+OnBootSec=45s
+OnUnitActiveSec=3min
+AccuracySec=15s
+Persistent=true
+Unit=mpwg-radar-cooker.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,26 @@
+{
+  "id": "mpwg-clean-2026-09",
+  "name": "MPWG Clean",
+  "author": "James",
+  "version": "2026-09",
+  "description": "MPWG Clean palette (James, Sep 2026). Physical dBZ is colorized here only — the cooker keeps the reflectivity grid separate. Transparent below 10 dBZ in Clean mode. Skips the classic cyan/blue clear-air look. Whole ramp is one shade lighter than a heavy NWS precip scale; magenta is reserved for intense cores (65+ dBZ).",
+  "units": "dBZ",
+  "below_min": [0, 0, 0, 0],
+  "stops": [
+    {"dbz": 5,  "rgba": [210, 235, 205, 25],  "label": "very light (Standard/All only)"},
+    {"dbz": 10, "rgba": [190, 230, 185, 55],  "label": "barely tinted"},
+    {"dbz": 15, "rgba": [165, 225, 145, 130], "label": "light green"},
+    {"dbz": 20, "rgba": [135, 215, 115, 165], "label": "light green"},
+    {"dbz": 25, "rgba": [105, 200, 90, 185],  "label": "light–medium green"},
+    {"dbz": 30, "rgba": [75, 185, 75, 200],   "label": "medium green"},
+    {"dbz": 35, "rgba": [95, 175, 70, 210],   "label": "medium green"},
+    {"dbz": 40, "rgba": [175, 205, 70, 220],  "label": "yellow-green"},
+    {"dbz": 45, "rgba": [235, 215, 75, 228],  "label": "yellow"},
+    {"dbz": 50, "rgba": [245, 170, 60, 235],  "label": "orange"},
+    {"dbz": 55, "rgba": [240, 125, 45, 240],  "label": "orange"},
+    {"dbz": 60, "rgba": [230, 80, 50, 245],   "label": "red"},
+    {"dbz": 65, "rgba": [200, 45, 50, 250],   "label": "red"},
+    {"dbz": 70, "rgba": [165, 30, 75, 255],   "label": "dark red"},
+    {"dbz": 75, "rgba": [150, 25, 115, 255],  "label": "magenta core"}
+  ]
+}

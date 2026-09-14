@@ -1,0 +1,33 @@
+.env
+.env.*
+!.env.example
+!.env*.example
+
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# runtime / smoke output
+data/
+work/
+output/
+*.grib2
+*.grib2.gz
+*.npz
+!tests/fixtures/*.npz
+
+# local secrets
+deploy/mpwg-radar.env
+/etc/
+
+.DS_Store

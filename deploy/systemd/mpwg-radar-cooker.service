@@ -1,0 +1,24 @@
+[Unit]
+Description=MPWG NOAA MRMS radar tile cooker (one shot)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=mpwg
+Group=mpwg
+WorkingDirectory=/opt/mpwg-radar
+EnvironmentFile=-/etc/mpwg-radar.env
+ExecStart=/opt/mpwg-radar/.venv/bin/mpwg-radar cook
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=6
+# t4g.small is 2 GB; abort if the OS is thrashing instead of cooking forever.
+MemoryMax=1536M
+TimeoutStartSec=240
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=mpwg-radar
+
+[Install]
+WantedBy=multi-user.target

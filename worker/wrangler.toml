@@ -1,0 +1,13 @@
+# MPWG radar tiles — Cloudflare Worker (optional CORS front for R2)
+name = "mpwg-radar-tiles"
+main = "src/index.js"
+compatibility_date = "2026-09-14"
+
+# wrangler secret / dashboard: bind this to the bucket the cooker uploads to.
+[[r2_buckets]]
+binding = "RADAR_BUCKET"
+bucket_name = "mpwg-radar"
+
+[vars]
+# Comma-separated origins, or "*" (default) for public map clients.
+ALLOWED_ORIGIN = "*"

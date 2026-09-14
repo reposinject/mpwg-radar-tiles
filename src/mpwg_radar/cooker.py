@@ -12,6 +12,7 @@ from typing import Dict, List, Optional
 import numpy as np
 
 from mpwg_radar.config import CookerConfig, load_config
+from mpwg_radar.geo import count_tiles, tiles_by_zoom
 from mpwg_radar.grib import ReflectivityFrame, decode_grib2
 from mpwg_radar.ingest import download_latest_mrms
 from mpwg_radar.palette import Palette, load_palette
@@ -38,6 +39,19 @@ def cook(
     palette = load_palette(cfg.palette_id)
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
     cfg.output_dir.mkdir(parents=True, exist_ok=True)
+    log.info(
+        "Cook start region=%s bbox=%s z%s-%s candidate_tiles=%d by_zoom=%s "
+        "tile_size=%d palette=%s modes=%s",
+        cfg.region_name,
+        cfg.bbox.as_dict(),
+        cfg.min_zoom,
+        cfg.max_zoom,
+        count_tiles(cfg.bbox, cfg.min_zoom, cfg.max_zoom),
+        tiles_by_zoom(cfg.bbox, cfg.min_zoom, cfg.max_zoom),
+        cfg.tile_size,
+        palette.id,
+        cfg.modes,
+    )
 
     frame = _load_frame(cfg, source=source, grib_path=grib_path)
     radar_root = cfg.output_dir / "radar"

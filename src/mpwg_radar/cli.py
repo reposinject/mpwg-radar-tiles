@@ -13,6 +13,7 @@ from mpwg_radar import __version__
 from mpwg_radar.config import load_config
 from mpwg_radar.cooker import cook
 from mpwg_radar.grib import decode_grib2
+from mpwg_radar.geo import CENTRAL_TEXAS, REGIONS
 from mpwg_radar.preview import write_preview
 from mpwg_radar.qc import apply_mode
 from mpwg_radar.synthetic import synthetic_central_texas
@@ -21,7 +22,7 @@ from mpwg_radar.synthetic import synthetic_central_texas
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         prog="mpwg-radar",
-        description="MPWG NOAA MRMS radar tile cooker (Central Texas, 512px XYZ → R2)",
+        description="MPWG NOAA MRMS radar tile cooker (CONUS, 512px XYZ → R2)",
     )
     parser.add_argument("--version", action="version", version=f"mpwg-radar {__version__}")
     parser.add_argument("--log-level", default=None, help="DEBUG, INFO, WARNING")
@@ -30,6 +31,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     cook_p = sub.add_parser("cook", help="Ingest MRMS, cook tiles, optionally upload to R2")
     cook_p.add_argument("--source", choices=("mrms", "synthetic", "nexrad"), default="mrms")
     cook_p.add_argument("--grib", type=Path, default=None, help="Local .grib2 / .grib2.gz")
+    cook_p.add_argument(
+        "--region",
+        default=None,
+        help="Named crop: conus (default) or central-texas",
+    )
     cook_p.add_argument("--modes", default=None, help="Comma list: clean,standard,all")
     cook_p.add_argument("--min-zoom", type=int, default=None)
     cook_p.add_argument("--max-zoom", type=int, default=None)
@@ -75,6 +81,12 @@ def _setup_logging(level: Optional[str]) -> None:
 
 def _cmd_cook(args) -> int:
     overrides = {}
+    if args.region:
+        name = args.region.strip().lower()
+        if name not in REGIONS:
+            raise SystemExit(f"Unknown region {name!r}. Known: {sorted(REGIONS)}")
+        overrides["region_name"] = name
+        overrides["bbox"] = REGIONS[name]
     if args.modes:
         overrides["modes"] = [m.strip() for m in args.modes.split(",") if m.strip()]
     if args.min_zoom is not None:
@@ -105,6 +117,9 @@ def _cmd_smoke(args) -> int:
         "skip_empty_tiles": False,
         "keep_dbz": True,
         "upload": False,
+        # Smoke stays on the small Central Texas crop so it is fast locally.
+        "region_name": "central-texas",
+        "bbox": CENTRAL_TEXAS,
     }
     cfg = load_config(overrides)
     source = "mrms" if args.live else "synthetic"

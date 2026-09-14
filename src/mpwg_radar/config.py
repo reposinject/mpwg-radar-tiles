@@ -7,7 +7,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
 
-from mpwg_radar.geo import CENTRAL_TEXAS, REGIONS, BBox
+from mpwg_radar.geo import (
+    CONUS,
+    CONUS_MAX_ZOOM,
+    CONUS_MIN_ZOOM,
+    REGIONS,
+    BBox,
+    parse_bbox,
+)
 
 
 def _truthy(value: Optional[str], default: bool = False) -> bool:
@@ -20,6 +27,26 @@ def _csv(value: Optional[str], default: List[str]) -> List[str]:
     if not value or not value.strip():
         return list(default)
     return [part.strip().lower() for part in value.split(",") if part.strip()]
+
+
+def _first_env(*names: str, default: str = "") -> str:
+    for name in names:
+        raw = os.environ.get(name)
+        if raw is not None and str(raw).strip():
+            return str(raw)
+    return default
+
+
+def resolve_region_bbox(
+    region_name: str, bbox_text: Optional[str] = None
+) -> tuple[str, BBox]:
+    """Resolve MPWG_REGION / MPWG_BBOX (or REGION / BBOX aliases)."""
+    name = (region_name or "conus").strip().lower()
+    if bbox_text and bbox_text.strip():
+        return name, parse_bbox(bbox_text, name=name)
+    if name not in REGIONS:
+        raise ValueError(f"Unknown region {name!r}. Known: {sorted(REGIONS)}")
+    return name, REGIONS[name]
 
 
 @dataclass
@@ -47,11 +74,11 @@ class R2Config:
 
 @dataclass
 class CookerConfig:
-    region_name: str = "central-texas"
-    bbox: BBox = field(default_factory=lambda: CENTRAL_TEXAS)
+    region_name: str = "conus"
+    bbox: BBox = field(default_factory=lambda: CONUS)
     modes: List[str] = field(default_factory=lambda: ["clean"])
-    min_zoom: int = 6
-    max_zoom: int = 9
+    min_zoom: int = CONUS_MIN_ZOOM
+    max_zoom: int = CONUS_MAX_ZOOM
     tile_size: int = 512
     skip_empty_tiles: bool = True
     keep_dbz: bool = True
@@ -72,10 +99,8 @@ class CookerConfig:
     user_agent: str = "mpwg-radar-tiles/1.0 (+https://github.com/reposinject/mpwg-radar-tiles)"
 
     def validate(self) -> None:
-        if self.region_name not in REGIONS:
-            raise ValueError(
-                f"Unknown region {self.region_name!r}. Known: {sorted(REGIONS)}"
-            )
+        if self.bbox.west >= self.bbox.east or self.bbox.south >= self.bbox.north:
+            raise ValueError("Invalid bbox (need west < east and south < north)")
         if self.min_zoom < 0 or self.max_zoom > 14 or self.min_zoom > self.max_zoom:
             raise ValueError("Invalid zoom range")
         if self.tile_size != 512:
@@ -107,14 +132,16 @@ def load_dotenv(path: Optional[Path] = None) -> None:
 
 def load_config(overrides: Optional[dict] = None) -> CookerConfig:
     load_dotenv()
-    region_name = os.environ.get("MPWG_REGION", "central-texas").strip().lower()
-    bbox = REGIONS.get(region_name, CENTRAL_TEXAS)
+    region_name, bbox = resolve_region_bbox(
+        _first_env("MPWG_REGION", "REGION", default="conus"),
+        _first_env("MPWG_BBOX", "BBOX", default=""),
+    )
     cfg = CookerConfig(
         region_name=region_name,
         bbox=bbox,
         modes=_csv(os.environ.get("MPWG_MODES"), ["clean"]),
-        min_zoom=int(os.environ.get("MPWG_MIN_ZOOM", "6")),
-        max_zoom=int(os.environ.get("MPWG_MAX_ZOOM", "9")),
+        min_zoom=int(os.environ.get("MPWG_MIN_ZOOM", str(CONUS_MIN_ZOOM))),
+        max_zoom=int(os.environ.get("MPWG_MAX_ZOOM", str(CONUS_MAX_ZOOM))),
         tile_size=int(os.environ.get("MPWG_TILE_SIZE", "512")),
         skip_empty_tiles=_truthy(os.environ.get("MPWG_SKIP_EMPTY_TILES"), True),
         keep_dbz=_truthy(os.environ.get("MPWG_KEEP_DBZ"), True),
@@ -147,5 +174,11 @@ def load_config(overrides: Optional[dict] = None) -> CookerConfig:
         for key, value in overrides.items():
             if value is not None and hasattr(cfg, key):
                 setattr(cfg, key, value)
+        if (
+            overrides.get("region_name")
+            and overrides.get("bbox") is None
+            and cfg.region_name in REGIONS
+        ):
+            cfg.bbox = REGIONS[cfg.region_name]
     cfg.validate()
     return cfg

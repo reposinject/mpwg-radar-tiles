@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from mpwg_radar.geo import CENTRAL_TEXAS, latlon_to_global_xy
+from mpwg_radar.geo import CENTRAL_TEXAS, CONUS, count_tiles, latlon_to_global_xy
 from mpwg_radar.palette import load_palette
 from mpwg_radar.qc import apply_mode
 from mpwg_radar.synthetic import synthetic_central_texas
@@ -44,3 +44,24 @@ def test_write_tiles_smoke_layout(tmp_path: Path):
     with Image.open(png) as im:
         assert im.size == (512, 512)
         assert im.mode == "RGBA"
+
+
+def test_write_tiles_skips_empty_conus_windows(tmp_path: Path):
+    """Synthetic echo is Central Texas-only; CONUS occupancy skip must not render the rest."""
+    frame = apply_mode(synthetic_central_texas(), "clean")
+    pal = load_palette()
+    stats = write_tiles(
+        frame,
+        pal,
+        tmp_path,
+        bbox=CONUS,
+        min_zoom=6,
+        max_zoom=7,
+        tile_size=512,
+        skip_empty=True,
+    )
+    candidates = count_tiles(CONUS, 6, 7)
+    assert candidates == 126 + 442
+    assert stats["written"] >= 1
+    assert stats["skipped_empty"] + stats["written"] == candidates
+    assert stats["written"] < 40

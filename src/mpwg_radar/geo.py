@@ -1,4 +1,4 @@
-"""Central Texas region, Web Mercator XYZ math, and 512px tile coverage.
+"""Cooker regions, Web Mercator XYZ math, and 512px tile coverage.
 
 XYZ indices match OSM/Google: tile (z, x, y) covers the same geographic
 extent as a standard 256px slippy map tile. We just sample it at 512×512.
@@ -41,8 +41,26 @@ class BBox:
         }
 
 
-# I-35 corridor: San Antonio – Austin – Waco, Hill Country to College Station.
-# Wide enough for metro context, small enough that t4g.small never renders CONUS.
+# NOAA MRMS MergedReflectivityQCComposite CONUS mosaic (0.01° grid):
+# 20°N–55°N, 130°W–60°W. Covers the lower 48, Gulf of Mexico, near-shore
+# Atlantic/Pacific, northern Mexico, and southern Canada. Not Alaska/Hawaii.
+#
+# Candidate 512px XYZ tiles that intersect this bbox (inclusive):
+#   z5=35  z6=126  z7=442  z8=1734  z9=6600
+# Production default on t4g.small (~3 min timer) is z6–8 = 2302 tiles/frame.
+# z6–9 = 8902 candidates; z9 alone is 6600 and will overrun a t4g.small cook
+# on a busy nationwide precip day even with empty-tile skip. Keep z6–9 for a
+# larger host via MPWG_MIN_ZOOM/MPWG_MAX_ZOOM.
+CONUS = BBox(
+    west=-130.0,
+    south=20.0,
+    east=-60.0,
+    north=55.0,
+    name="conus",
+)
+
+# I-35 corridor: San Antonio – Austin – Waco. Kept for smoke tests and a
+# cheap local cook (MPWG_REGION=central-texas). z6–9 = 80 tiles.
 CENTRAL_TEXAS = BBox(
     west=-100.25,
     south=28.85,
@@ -52,8 +70,26 @@ CENTRAL_TEXAS = BBox(
 )
 
 REGIONS = {
+    "conus": CONUS,
     "central-texas": CENTRAL_TEXAS,
 }
+
+# Default production zoom band for CONUS on t4g.small. See CONUS comment.
+CONUS_MIN_ZOOM = 6
+CONUS_MAX_ZOOM = 8
+
+
+def parse_bbox(text: str, name: str = "custom") -> BBox:
+    """Parse `west,south,east,north` (degrees). Used by MPWG_BBOX / BBOX."""
+    parts = [p.strip() for p in text.split(",")]
+    if len(parts) != 4:
+        raise ValueError(
+            "BBox must be four comma-separated numbers: west,south,east,north"
+        )
+    west, south, east, north = (float(p) for p in parts)
+    if west >= east or south >= north:
+        raise ValueError("BBox must have west < east and south < north")
+    return BBox(west=west, south=south, east=east, north=north, name=name)
 
 
 def lon_to_180(lon: float) -> float:
@@ -125,3 +161,7 @@ def tile_pixel_centers(
 
 def count_tiles(bbox: BBox, min_zoom: int, max_zoom: int) -> int:
     return sum(1 for _ in iter_tiles(bbox, min_zoom, max_zoom))
+
+
+def tiles_by_zoom(bbox: BBox, min_zoom: int, max_zoom: int) -> dict:
+    return {z: len(tiles_for_bbox(bbox, z)) for z in range(min_zoom, max_zoom + 1)}

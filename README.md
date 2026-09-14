@@ -1,14 +1,14 @@
 # MPWG radar tiles
 
-Self-hosted **NOAA MRMS** reflectivity cooker for **My Personal Weatherguy**. It crops **Central Texas**, keeps **physical dBZ** separate from color, paints the **MPWG Clean** palette (James, Sep 2026), and emits **512×512 XYZ PNGs** for Cloudflare R2. Designed to run on **AWS EC2 Amazon Linux 2023 ARM (`t4g.small`)** on a systemd timer.
+Self-hosted **NOAA MRMS** reflectivity cooker for **My Personal Weatherguy**. It crops the **CONUS MRMS mosaic**, keeps **physical dBZ** separate from color, paints the **MPWG Clean** palette (James, Sep 2026), and emits **512×512 XYZ PNGs** for Cloudflare R2. Designed to run on **AWS EC2 Amazon Linux 2023 ARM (`t4g.small`)** on a systemd timer.
 
-No paid radar vendor. CONUS is never pre-rendered.
+No paid radar vendor. Alaska and Hawaii are outside the NOAA MRMS CONUS mosaic.
 
 ## What it does
 
 1. Downloads free NOAA MRMS `MergedReflectivityQCComposite` (NCEP HTTP, AWS Open Data fallback).
 2. Decodes PNG-packed GRIB2 with Pillow (no GDAL/eccodes required).
-3. Crops Central Texas immediately so a 2 GB ARM instance stays comfortable.
+3. Crops the CONUS mosaic bbox immediately, then QC / colorize / tile.
 4. Stores a float32 dBZ grid (`output/dbz/{frame}.npz`) **before** colorization.
 5. Applies mode QC, then the Clean palette.
 6. Writes `{z}/{x}/{y}.png` at 512 px, transparent where there is no echo.
@@ -16,9 +16,33 @@ No paid radar vendor. CONUS is never pre-rendered.
 8. Uploads with **boto3** to **Cloudflare R2** when `R2_*` env vars are set.
 9. Repeats about every 3 minutes via systemd.
 
-### Central Texas crop
+### CONUS crop and zooms
 
-`west=-100.25, south=28.85, east=-96.15, north=32.55` — San Antonio, Austin, Waco, Killeen, College Station, Hill Country. Default zooms **6–9** (configurable; do not raise this to CONUS).
+Default region **`conus`**: `west=-130, south=20, east=-60, north=55` — NOAA MRMS `MergedReflectivityQCComposite` mosaic (0.01° grid). Lower 48, Gulf, near-shore Atlantic/Pacific, northern Mexico, southern Canada. Not Alaska or Hawaii.
+
+Default zooms **6–8** (512 px tiles). Candidate tiles per frame (every XYZ cell that intersects the bbox, including empty ocean):
+
+| Zoom band | Tiles / frame | Why |
+| --- | --- | --- |
+| **6–8 (default)** | **2302** (z6=126, z7=442, z8=1734) | Fits `t4g.small` on the ~3 min timer with empty-tile skip |
+| 5–8 | 2337 | z5 is only +35 tiles if the map needs a national overview |
+| 6–9 | 8902 | z9 alone is 6600; too many for t4g.small on a busy precip day |
+| `central-texas` 6–9 | 80 | Local smoke / cheap debug crop |
+
+Empty tiles are skipped (not written). The optional Worker returns a transparent PNG for missing keys, so clear air stays clear instead of purple 404s.
+
+Named region `central-texas` (`west=-100.25, south=28.85, east=-96.15, north=32.55`) remains for smoke tests.
+
+Env (also accepted as unprefixed `REGION` / `BBOX`):
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `MPWG_REGION` | `conus` | `conus` or `central-texas` |
+| `MPWG_BBOX` | (unset) | Optional `west,south,east,north` override in degrees |
+| `MPWG_MIN_ZOOM` | `6` | Inclusive |
+| `MPWG_MAX_ZOOM` | `8` | Inclusive; do not set `9` on t4g.small |
+| `MPWG_TILE_SIZE` | `512` | Production contract |
+| `MPWG_MODES` | `clean` | `clean`, or `clean,standard,all` |
 
 ### Modes
 
@@ -150,7 +174,7 @@ Do not commit secrets. `.env` is gitignored.
 
 ```bash
 sudo bash deploy/ec2-setup.sh
-sudo nano /etc/mpwg-radar.env    # paste R2 keys
+sudo nano /etc/mpwg-radar.env    # paste R2 keys; confirm MPWG_REGION=conus and zooms 6–8
 sudo systemctl start mpwg-radar-cooker.service
 sudo systemctl status mpwg-radar-cooker.timer
 journalctl -u mpwg-radar-cooker.service -n 80 -f
@@ -164,7 +188,38 @@ The oneshot unit runs:
 /opt/mpwg-radar/.venv/bin/mpwg-radar cook
 ```
 
-Memory is capped at 1536M. Crop-first ingest is what makes `t4g.small` viable — do not expand the bbox to CONUS.
+Memory is capped at 1536M. Default CONUS zooms are **6–8** (~2302 candidate tiles/frame). Empty tiles are skipped before the 512×512 render so a t4g.small can finish inside the 3 minute timer.
+
+### Deploy note — existing `/etc/mpwg-radar.env`
+
+`ec2-setup.sh` **keeps** an existing env file, so a host that was cooking Central Texas will stay on that crop until you edit the file. After pulling this revision:
+
+```bash
+sudo nano /etc/mpwg-radar.env
+```
+
+Set (or confirm):
+
+```
+MPWG_REGION=conus
+MPWG_MIN_ZOOM=6
+MPWG_MAX_ZOOM=8
+MPWG_TILE_SIZE=512
+MPWG_MODES=clean
+```
+
+Optional bbox override: `MPWG_BBOX=-130,20,-60,55` (west,south,east,north). Then reinstall units from the repo, reload, and kick the timer:
+
+```bash
+sudo bash deploy/ec2-setup.sh          # rsyncs code, pip install -e, installs units
+sudo systemctl daemon-reload
+sudo systemctl restart mpwg-radar-cooker.timer
+sudo systemctl start mpwg-radar-cooker.service
+sudo systemctl status mpwg-radar-cooker.timer
+journalctl -u mpwg-radar-cooker.service -n 80 -f
+```
+
+Confirm the new `manifest.json` has `"region": "conus"`, the CONUS bbox, and `min_zoom`/`max_zoom` 6–8. Map clients that still request z9 should set `maxzoom` / `maxNativeZoom` to 8 (or overzoom from z8).
 
 ## Optional Worker
 
@@ -184,7 +239,7 @@ map.addSource('mpwg-radar', {
   tiles: ['https://YOUR_DOMAIN/clean/latest/{z}/{x}/{y}.png'],
   tileSize: 512,
   minzoom: 6,
-  maxzoom: 9,
+  maxzoom: 8,
   attribution: 'NOAA MRMS · MPWG Clean'
 });
 map.addLayer({

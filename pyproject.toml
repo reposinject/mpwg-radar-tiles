@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "mpwg-radar"
 version = "1.0.0"
-description = "MPWG NOAA MRMS radar tile cooker for Central Texas (512px XYZ → Cloudflare R2)"
+description = "MPWG NOAA MRMS radar tile cooker for CONUS (512px XYZ → Cloudflare R2)"
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }

@@ -2,7 +2,7 @@
 
 Operational MergedReflectivityQCComposite is a single GRIB2 message on a
 regular 0.01° CONUS lat/lon grid, packed with PNG (template 5.41). That lets
-a t4g.small cook Central Texas using only Pillow + numpy.
+a t4g.small cook CONUS tiles using only Pillow + numpy.
 
 Physical dBZ is returned as float32; colorization happens later.
 """

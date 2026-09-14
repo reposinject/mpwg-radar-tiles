@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Documented smoke test: sample Clean-palette 512×512 tiles (synthetic by default).
 # Usage:
-#   ./scripts/smoke_test.sh           # synthetic Central Texas storm
+#   ./scripts/smoke_test.sh           # synthetic Central Texas storm (small crop)
 #   ./scripts/smoke_test.sh --live    # latest NOAA MRMS (falls back to synthetic)
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"

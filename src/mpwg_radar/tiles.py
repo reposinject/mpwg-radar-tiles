@@ -10,7 +10,7 @@ from typing import Dict, Iterable, List, Optional, Tuple
 import numpy as np
 from PIL import Image
 
-from mpwg_radar.geo import BBox, iter_tiles, tile_pixel_centers
+from mpwg_radar.geo import BBox, iter_tiles, tile_bounds, tile_pixel_centers
 from mpwg_radar.grib import ReflectivityFrame
 from mpwg_radar.palette import Palette
 
@@ -63,6 +63,34 @@ def render_tile(
     return Image.fromarray(rgba), has_echo
 
 
+def _axis_window(axis: np.ndarray, lo: float, hi: float, pad: int = 1) -> slice:
+    """Inclusive slice of a monotonic lat or lon axis overlapping [lo, hi]."""
+    if axis.size == 0:
+        return slice(0, 0)
+    increasing = bool(axis[-1] >= axis[0])
+    ordered = axis if increasing else axis[::-1]
+    i0 = int(np.searchsorted(ordered, lo, side="left"))
+    i1 = int(np.searchsorted(ordered, hi, side="right"))
+    if not increasing:
+        n = int(axis.size)
+        i0, i1 = n - i1, n - i0
+    i0 = max(0, i0 - pad)
+    i1 = min(int(axis.size), i1 + pad)
+    if i1 <= i0:
+        return slice(0, 0)
+    return slice(i0, i1)
+
+
+def tile_has_echo(frame: ReflectivityFrame, z: int, x: int, y: int) -> bool:
+    """True if the physical grid has any finite dBZ inside the XYZ tile."""
+    bounds = tile_bounds(z, x, y)
+    rows = _axis_window(frame.lat, bounds.south, bounds.north)
+    cols = _axis_window(frame.lon, bounds.west, bounds.east)
+    if rows.start == rows.stop or cols.start == cols.stop:
+        return False
+    return bool(np.any(np.isfinite(frame.dbz[rows, cols])))
+
+
 def write_tiles(
     frame: ReflectivityFrame,
     palette: Palette,
@@ -79,6 +107,9 @@ def write_tiles(
     skipped = 0
     paths: List[str] = []
     for z, x, y in iter_tiles(bbox, min_zoom, max_zoom):
+        if skip_empty and not tile_has_echo(frame, z, x, y):
+            skipped += 1
+            continue
         image, has_echo = render_tile(frame, palette, z, x, y, tile_size)
         if skip_empty and not has_echo:
             skipped += 1

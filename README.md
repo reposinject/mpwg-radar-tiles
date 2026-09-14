@@ -88,6 +88,14 @@ pip install -e .
 ./scripts/smoke_test.sh --live
 ```
 
+If `python3 -m venv` is unavailable, `./scripts/smoke_test.sh` uses the current interpreter (`pip install -e .` or `PYTHONPATH=src`). Same thing:
+
+```bash
+python3 -m pip install -e .
+python3 -m mpwg_radar smoke
+python3 -m mpwg_radar smoke --live
+```
+
 Then:
 
 - Tiles: `output/smoke/radar/clean/latest/{z}/{x}/{y}.png`

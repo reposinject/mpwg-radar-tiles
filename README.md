@@ -13,7 +13,7 @@ No paid radar vendor. Alaska and Hawaii are outside the NOAA MRMS CONUS mosaic.
 5. Applies mode QC, then the Clean palette.
 6. Writes `{z}/{x}/{y}.png` at 512 px, transparent where there is no echo.
 7. Writes `frame.json` + `manifest.json`.
-8. Uploads with **boto3** to **Cloudflare R2** when `R2_*` env vars are set.
+8. Uploads **the new frame + `latest/` + `manifest.json`** to **Cloudflare R2** when `R2_*` env vars are set (not the whole local retention tree).
 9. Repeats about every 3 minutes via systemd.
 
 ### CONUS crop and zooms
@@ -43,6 +43,12 @@ Env (also accepted as unprefixed `REGION` / `BBOX`):
 | `MPWG_MAX_ZOOM` | `8` | Inclusive; do not set `9` on t4g.small |
 | `MPWG_TILE_SIZE` | `512` | Production contract |
 | `MPWG_MODES` | `clean` | `clean`, or `clean,standard,all` |
+| `MPWG_RETENTION_FRAMES` | `30` | Frames kept **on local disk** for `manifest.json` animation. R2 upload does **not** re-push this history each cook |
+| `MPWG_UPLOAD_WORKERS` | `4` | Concurrent R2 PUTs (clamped 1–8; t4g.small-safe) |
+| `MPWG_UPLOAD_TIMEOUT_SECONDS` | `120` | Fail the cook if the upload phase exceeds this |
+| `MPWG_R2_CONNECT_TIMEOUT` | `10` | Seconds to establish each R2 connection |
+| `MPWG_R2_READ_TIMEOUT` | `30` | Seconds waiting on each R2 response |
+| `MPWG_UPLOAD_ALL_FRAMES` | `false` | `true` re-uploads every retained local frame (repair / backfill only) |
 
 ### Modes
 
@@ -156,6 +162,17 @@ R2_BUCKET=mpwg-radar
 R2_PREFIX=radar
 ```
 
+Each cook PUTs only:
+
+1. `{mode}/{frameId}/` tiles + `frame.json` (the frame just cooked)
+2. `{mode}/latest/` (live map pointer; short Cache-Control)
+3. `colorbar.png`
+4. `manifest.json` last (so animation clients do not see a frame before its tiles exist)
+
+Older frames listed in `manifest.json` stay on **local disk** (`MPWG_RETENTION_FRAMES`, default 30) and are **not** re-uploaded. They remain on R2 from the cook that created them until local retention prunes them, at which point the cooker deletes that prefix on R2.
+
+This matters on CONUS z6–8: a full retention tree can be ~1 GB. The previous cook path re-walked that tree every cycle with boto3 `upload_file` (no per-PUT timeout). That is a verified code path; a hang in `futex_wait` after ~1 GB sent is consistent with TransferManager threads / a stuck socket, but that hang was not reproduced here. Uploads now use `put_object` with connect/read timeouts, a worker pool, and an overall phase deadline.
+
 `boto3` uploads only when those keys are set. Without them the cooker still writes tiles locally.
 
 ```bash
@@ -165,6 +182,17 @@ mpwg-radar cook --source synthetic --no-upload
 ```
 
 Do not commit secrets. `.env` is gitignored.
+
+If a cook exceeds `MPWG_UPLOAD_TIMEOUT_SECONDS` (default 120), the process exits non-zero instead of sitting in the upload phase. systemd `TimeoutStartSec=300` is the last-resort backstop. After a timeout, R2 may have a partial new-frame prefix; the next successful cook overwrites it. Live `latest/` and `manifest.json` are updated only after the new frame PUTs finish.
+
+Repair / backfill (re-push every retained local frame — can be large):
+
+```
+MPWG_UPLOAD_ALL_FRAMES=true
+MPWG_UPLOAD_TIMEOUT_SECONDS=300
+```
+
+Then run one cook and set `MPWG_UPLOAD_ALL_FRAMES` back to false.
 
 ## EC2 (Amazon Linux 2023 ARM / t4g.small)
 
@@ -220,6 +248,45 @@ journalctl -u mpwg-radar-cooker.service -n 80 -f
 ```
 
 Confirm the new `manifest.json` has `"region": "conus"`, the CONUS bbox, and `min_zoom`/`max_zoom` 6–8. Map clients that still request z9 should set `maxzoom` / `maxNativeZoom` to 8 (or overzoom from z8).
+
+### Redeploy this R2 upload fix on EC2
+
+On the cooker host, as root, from the repo checkout (or after `git pull`):
+
+```bash
+cd /path/to/mpwg-radar-tiles
+sudo git pull                         # or rsync this revision onto the host
+sudo bash deploy/ec2-setup.sh         # rsyncs to /opt/mpwg-radar, pip install -e, reinstalls units
+```
+
+`ec2-setup.sh` **keeps** `/etc/mpwg-radar.env`. Optional knobs (defaults are already t4g.small-safe):
+
+```
+MPWG_RETENTION_FRAMES=30
+MPWG_UPLOAD_WORKERS=4
+MPWG_UPLOAD_TIMEOUT_SECONDS=120
+MPWG_R2_CONNECT_TIMEOUT=10
+MPWG_R2_READ_TIMEOUT=30
+# MPWG_UPLOAD_ALL_FRAMES=false
+```
+
+Then reload and kick one cook:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart mpwg-radar-cooker.timer
+sudo systemctl start mpwg-radar-cooker.service
+sudo systemctl status mpwg-radar-cooker.timer
+journalctl -u mpwg-radar-cooker.service -n 120 -f
+```
+
+Look for `R2 upload scope=new-frame` (not `all-frames`), object counts on the order of **one** CONUS frame plus `latest/` (not ~30× that), and `Cook complete` without a hang. CDN `manifest.json` `updated_at` should advance; `clean/latest/{z}/{x}/{y}.png` should stop 404ing for the new frame.
+
+If a previous cook is still running (`systemctl is-active mpwg-radar-cooker.service`), stop it before restarting so it cannot keep the timer blocked:
+
+```bash
+sudo systemctl stop mpwg-radar-cooker.service
+```
 
 ## Optional Worker
 

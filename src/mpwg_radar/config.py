@@ -37,6 +37,15 @@ def _first_env(*names: str, default: str = "") -> str:
     return default
 
 
+def _clamp_int(value: Optional[str], *, lo: int, hi: int, default: int) -> int:
+    """Parse an int env var and clamp it. Empty/unset → default."""
+    if value is None or not str(value).strip():
+        parsed = default
+    else:
+        parsed = int(value)
+    return max(lo, min(hi, parsed))
+
+
 def resolve_region_bbox(
     region_name: str, bbox_text: Optional[str] = None
 ) -> tuple[str, BBox]:
@@ -58,6 +67,13 @@ class R2Config:
     endpoint: str = ""
     prefix: str = "radar"
     public_base_url: str = ""
+    # Fail-fast HTTP timeouts for each R2 PUT (botocore / urllib3).
+    connect_timeout: float = 10.0
+    read_timeout: float = 30.0
+    max_attempts: int = 3
+    # Worker pool + overall cook-upload deadline (not per-object).
+    upload_workers: int = 4
+    upload_timeout_seconds: float = 120.0
 
     @property
     def enabled(self) -> bool:
@@ -94,9 +110,20 @@ class CookerConfig:
     mrms_s3_prefix: str = "CONUS/MergedReflectivityQCComposite_00.50"
     mrms_timeout_seconds: int = 60
     upload: bool = True
+    # Re-upload every retained local frame (repair / backfill). Default is the
+    # new frame + latest pointers + manifest only.
+    upload_all_frames: bool = False
     r2: R2Config = field(default_factory=R2Config)
     palette_id: str = "mpwg-clean-2026-09"
     user_agent: str = "mpwg-radar-tiles/1.0 (+https://github.com/reposinject/mpwg-radar-tiles)"
+
+    @property
+    def upload_workers(self) -> int:
+        return self.r2.upload_workers
+
+    @property
+    def upload_timeout_seconds(self) -> float:
+        return self.r2.upload_timeout_seconds
 
     def validate(self) -> None:
         if self.bbox.west >= self.bbox.east or self.bbox.south >= self.bbox.north:
@@ -112,6 +139,16 @@ class CookerConfig:
             raise ValueError(f"Unknown modes: {unknown}")
         if not self.modes:
             raise ValueError("At least one mode is required")
+        if self.retention_frames < 1:
+            raise ValueError("MPWG_RETENTION_FRAMES must be >= 1")
+        if self.r2.upload_workers < 1:
+            raise ValueError("MPWG_UPLOAD_WORKERS must be >= 1")
+        if self.r2.upload_timeout_seconds <= 0:
+            raise ValueError("MPWG_UPLOAD_TIMEOUT_SECONDS must be > 0")
+        if self.r2.connect_timeout <= 0 or self.r2.read_timeout <= 0:
+            raise ValueError("R2 connect/read timeouts must be > 0")
+        if self.r2.max_attempts < 1:
+            raise ValueError("MPWG_R2_MAX_ATTEMPTS must be >= 1")
 
 
 def load_dotenv(path: Optional[Path] = None) -> None:
@@ -159,6 +196,7 @@ def load_config(overrides: Optional[dict] = None) -> CookerConfig:
         ),
         mrms_timeout_seconds=int(os.environ.get("MRMS_TIMEOUT_SECONDS", "60")),
         upload=_truthy(os.environ.get("MPWG_UPLOAD"), True),
+        upload_all_frames=_truthy(os.environ.get("MPWG_UPLOAD_ALL_FRAMES"), False),
         r2=R2Config(
             account_id=os.environ.get("R2_ACCOUNT_ID", "").strip(),
             access_key_id=os.environ.get("R2_ACCESS_KEY_ID", "").strip(),
@@ -167,6 +205,15 @@ def load_config(overrides: Optional[dict] = None) -> CookerConfig:
             endpoint=os.environ.get("R2_ENDPOINT", "").strip(),
             prefix=os.environ.get("R2_PREFIX", "radar").strip().strip("/"),
             public_base_url=os.environ.get("R2_PUBLIC_BASE_URL", "").rstrip("/"),
+            connect_timeout=float(os.environ.get("MPWG_R2_CONNECT_TIMEOUT", "10")),
+            read_timeout=float(os.environ.get("MPWG_R2_READ_TIMEOUT", "30")),
+            max_attempts=int(os.environ.get("MPWG_R2_MAX_ATTEMPTS", "3")),
+            upload_workers=_clamp_int(
+                os.environ.get("MPWG_UPLOAD_WORKERS", "4"), lo=1, hi=8, default=4
+            ),
+            upload_timeout_seconds=float(
+                os.environ.get("MPWG_UPLOAD_TIMEOUT_SECONDS", "120")
+            ),
         ),
         palette_id=os.environ.get("MPWG_PALETTE", "mpwg-clean-2026-09"),
     )

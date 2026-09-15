@@ -74,11 +74,20 @@ def cook(
     should_upload = cfg.upload if upload is None else upload
     uploaded: List[str] = []
     if should_upload and cfg.r2.enabled:
-        publisher = R2Publisher(cfg.r2)
-        uploaded = publisher.upload_tree(radar_root, relative_root="")
+        publisher = R2Publisher(
+            cfg.r2,
+            workers=cfg.upload_workers,
+            timeout_seconds=cfg.upload_timeout_seconds,
+        )
+        uploaded = publisher.upload_cook(
+            radar_root,
+            frame_id=frame.frame_id,
+            modes=cfg.modes,
+            all_frames=cfg.upload_all_frames,
+        )
         for mode, ids in stale.items():
-            for frame_id in ids:
-                publisher.delete_prefix(f"{mode}/{frame_id}")
+            for stale_id in ids:
+                publisher.delete_prefix(f"{mode}/{stale_id}")
     elif should_upload and not cfg.r2.enabled:
         log.info("R2 env not set — cooked locally, skipped upload")
 

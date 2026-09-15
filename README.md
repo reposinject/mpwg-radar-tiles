@@ -13,7 +13,7 @@ No paid radar vendor. Alaska and Hawaii are outside the NOAA MRMS CONUS mosaic.
 5. Applies mode QC, then the Clean palette.
 6. Writes `{z}/{x}/{y}.png` at 512 px, transparent where there is no echo.
 7. Writes `frame.json` + `manifest.json`.
-8. Uploads with **boto3** to **Cloudflare R2** when `R2_*` env vars are set.
+8. Uploads **this cook's new frame + `latest` pointers + `manifest.json`** with **boto3** `put_object` to **Cloudflare R2** when `R2_*` env vars are set. Retained historical frames are not re-uploaded.
 9. Repeats about every 3 minutes via systemd.
 
 ### CONUS crop and zooms
@@ -158,6 +158,27 @@ R2_PREFIX=radar
 
 `boto3` uploads only when those keys are set. Without them the cooker still writes tiles locally.
 
+Each cook uploads only:
+
+- `{mode}/{frameId}/**` (new tiles + `frame.json`)
+- `{mode}/latest/**` (short-lived pointers)
+- `colorbar.png` and `manifest.json` (manifest last, so a failed upload leaves CDN on the previous frame)
+
+It does **not** walk or re-upload the rest of `MPWG_RETENTION_FRAMES`. Re-sending the full CONUS retention set on t4g.small (~1 GB+ of identical objects, no socket timeout) is what hung the publisher in `futex_wait`.
+
+Optional upload limits (defaults are safe on t4g.small):
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `MPWG_UPLOAD_CONCURRENCY` | `2` | Parallel `put_object` workers (2 vCPU; try `4` only if logs show upload bound) |
+| `MPWG_UPLOAD_CONNECT_TIMEOUT` | `10` | boto3 connect timeout (seconds) |
+| `MPWG_UPLOAD_READ_TIMEOUT` | `30` | boto3 read timeout (seconds) |
+| `MPWG_UPLOAD_OBJECT_TIMEOUT` | `60` | Fail if no object completes in this many seconds |
+| `MPWG_UPLOAD_TIMEOUT` | `180` | Fail the whole upload after this many seconds |
+| `MPWG_UPLOAD_MAX_ATTEMPTS` | `2` | botocore attempts (initial + 1 retry) |
+
+Logs look like: `R2 upload start objects=N skipped=M concurrency=2 …` then `R2 upload complete started=N uploaded=N failed=0 skipped=M duration=12.34s`. `status.json` records `uploaded`, `upload_skipped`, and `upload_duration_seconds`.
+
 ```bash
 mpwg-radar cook                  # MRMS → tiles → R2 if env set
 mpwg-radar cook --no-upload      # local only
@@ -220,6 +241,49 @@ journalctl -u mpwg-radar-cooker.service -n 80 -f
 ```
 
 Confirm the new `manifest.json` has `"region": "conus"`, the CONUS bbox, and `min_zoom`/`max_zoom` 6–8. Map clients that still request z9 should set `maxzoom` / `maxNativeZoom` to 8 (or overzoom from z8).
+
+### Deploy note — R2 upload hang on t4g.small (CONUS)
+
+If cook finishes locally (`manifest.json` + tiles under `output/radar/clean/{frameId}/`) but the process sits in `futex_wait` during R2 upload and the public CDN stays stale:
+
+1. Stop the hung oneshot (systemd `TimeoutStartSec=300` should eventually SIGTERM it):
+
+```bash
+sudo systemctl stop mpwg-radar-cooker.service
+sudo pkill -f 'mpwg-radar cook' || true
+```
+
+2. Pull this revision and reinstall (rsync + `pip install -e`):
+
+```bash
+cd /opt/mpwg-radar   # or the clone you used
+sudo git pull        # if the instance tracks git; otherwise rsync the tree
+sudo bash deploy/ec2-setup.sh
+```
+
+3. Keep `/etc/mpwg-radar.env`. You do **not** need `MPWG_RETENTION_FRAMES=5` for the upload fix (that only shrinks local disk / old full-tree walks). Optional explicit limits:
+
+```
+MPWG_UPLOAD_CONCURRENCY=2
+MPWG_UPLOAD_CONNECT_TIMEOUT=10
+MPWG_UPLOAD_READ_TIMEOUT=30
+MPWG_UPLOAD_OBJECT_TIMEOUT=60
+MPWG_UPLOAD_TIMEOUT=180
+MPWG_UPLOAD_MAX_ATTEMPTS=2
+```
+
+4. Reload and run one cook:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart mpwg-radar-cooker.timer
+sudo systemctl start mpwg-radar-cooker.service
+journalctl -u mpwg-radar-cooker.service -n 120 -f
+```
+
+Success looks like `R2 upload start` with `frame=<N> latest=<N>` (one frame, not the full retention) and `R2 upload complete … failed=0` in well under the 180s upload deadline. Then `curl` the public `manifest.json` / `clean/latest/…` and confirm `latest_frame` matches the cook `frame_id`.
+
+A failed upload raises and leaves the previous `latest` + manifest on the CDN (manifest is written last). The next timer shot retries.
 
 ## Optional Worker
 

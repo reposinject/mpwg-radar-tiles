@@ -57,3 +57,19 @@ def test_load_config_bbox_override(monkeypatch):
 def test_unknown_region_raises():
     with pytest.raises(ValueError, match="Unknown region"):
         resolve_region_bbox("europe")
+
+
+def test_load_config_upload_timeouts(monkeypatch):
+    monkeypatch.setenv("MPWG_UPLOAD_CONNECT_TIMEOUT", "8")
+    monkeypatch.setenv("MPWG_UPLOAD_READ_TIMEOUT", "12")
+    monkeypatch.setenv("MPWG_UPLOAD_OBJECT_TIMEOUT", "45")
+    monkeypatch.setenv("MPWG_UPLOAD_TIMEOUT", "90")
+    monkeypatch.setenv("MPWG_UPLOAD_CONCURRENCY", "2")
+    monkeypatch.setenv("MPWG_UPLOAD_MAX_ATTEMPTS", "2")
+    cfg = load_config()
+    assert cfg.r2.connect_timeout_seconds == 8
+    assert cfg.r2.read_timeout_seconds == 12
+    assert cfg.r2.object_timeout_seconds == 45
+    assert cfg.r2.upload_timeout_seconds == 90
+    assert cfg.r2.upload_concurrency == 2
+    assert cfg.r2.max_attempts == 2

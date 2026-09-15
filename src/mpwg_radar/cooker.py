@@ -16,7 +16,7 @@ from mpwg_radar.geo import count_tiles, tiles_by_zoom
 from mpwg_radar.grib import ReflectivityFrame, decode_grib2
 from mpwg_radar.ingest import download_latest_mrms
 from mpwg_radar.palette import Palette, load_palette
-from mpwg_radar.publish import R2Publisher
+from mpwg_radar.publish import R2Publisher, UploadStats
 from mpwg_radar.qc import MODES, apply_mode
 from mpwg_radar.synthetic import synthetic_central_texas
 from mpwg_radar.tiles import write_colorbar, write_tiles
@@ -72,13 +72,15 @@ def cook(
     _prune_old_frames(cfg, radar_root)
 
     should_upload = cfg.upload if upload is None else upload
-    uploaded: List[str] = []
+    upload_stats = UploadStats()
     if should_upload and cfg.r2.enabled:
         publisher = R2Publisher(cfg.r2)
-        uploaded = publisher.upload_tree(radar_root, relative_root="")
+        upload_stats = publisher.upload_frame(
+            radar_root, frame_id=frame.frame_id, modes=cfg.modes
+        )
         for mode, ids in stale.items():
-            for frame_id in ids:
-                publisher.delete_prefix(f"{mode}/{frame_id}")
+            for stale_id in ids:
+                publisher.delete_prefix(f"{mode}/{stale_id}")
     elif should_upload and not cfg.r2.enabled:
         log.info("R2 env not set — cooked locally, skipped upload")
 
@@ -90,7 +92,9 @@ def cook(
         "region": cfg.region_name,
         "modes": mode_summaries,
         "manifest": str((radar_root / "manifest.json").resolve()),
-        "uploaded": len(uploaded),
+        "uploaded": upload_stats.uploaded,
+        "upload_skipped": upload_stats.skipped,
+        "upload_duration_seconds": round(upload_stats.duration_seconds, 2),
         "palette": palette.id,
     }
     (cfg.output_dir / "status.json").write_text(json.dumps(result, indent=2) + "\n")

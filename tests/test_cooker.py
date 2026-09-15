@@ -5,10 +5,13 @@ from pathlib import Path
 
 import pytest
 
+from datetime import datetime, timezone
+
 from mpwg_radar.config import CookerConfig, R2Config
 from mpwg_radar.cooker import cook
 from mpwg_radar.geo import CENTRAL_TEXAS
 from mpwg_radar.publish import R2Publisher
+from mpwg_radar.synthetic import synthetic_central_texas
 
 
 def test_synthetic_cook_writes_manifest_and_512_tiles(tmp_path: Path):
@@ -61,27 +64,13 @@ def test_default_conus_cook_writes_conus_manifest(tmp_path: Path):
     assert manifest["tile_size"] == 512
 
 
-def test_r2_publisher_uses_boto3_when_env_set(tmp_path: Path, monkeypatch):
+def test_r2_publisher_uses_boto3_when_env_set(tmp_path: Path):
     uploaded = []
 
     class FakeClient:
-        def upload_file(self, local, bucket, key, ExtraArgs=None):
-            uploaded.append((local, bucket, key, ExtraArgs))
+        def put_object(self, **kwargs):
+            uploaded.append(kwargs)
 
-    class FakeBoto3:
-        def client(self, *args, **kwargs):
-            return FakeClient()
-
-    import mpwg_radar.publish as pub
-
-    monkeypatch.setitem(__import__("sys").modules, "boto3", FakeBoto3())
-    monkeypatch.setitem(
-        __import__("sys").modules,
-        "botocore.config",
-        type("m", (), {"Config": lambda *a, **k: None}),
-    )
-
-    # Bypass real imports inside R2Publisher by injecting after construct.
     png = tmp_path / "0" / "1" / "2.png"
     png.parent.mkdir(parents=True)
     png.write_bytes(b"\x89PNG\r\n")
@@ -97,7 +86,83 @@ def test_r2_publisher_uses_boto3_when_env_set(tmp_path: Path, monkeypatch):
     publisher.client = FakeClient()
     publisher.bucket = cfg.bucket
     publisher.prefix = cfg.prefix
+    publisher.connect_timeout = 10
+    publisher.read_timeout = 30
+    publisher.upload_timeout = 180
+    publisher.object_timeout = 60
+    publisher.concurrency = 2
+    publisher.max_attempts = 2
     key = publisher.upload_file(png, "clean/latest/0/1/2.png")
     assert key == "radar/clean/latest/0/1/2.png"
-    assert uploaded[0][1] == "mpwg-radar"
-    assert uploaded[0][3]["ContentType"] == "image/png"
+    assert uploaded[0]["Bucket"] == "mpwg-radar"
+    assert uploaded[0]["ContentType"] == "image/png"
+
+
+def test_cook_uploads_only_new_frame_not_retention(tmp_path: Path, monkeypatch):
+    puts: list[str] = []
+
+    class FakeClient:
+        def put_object(self, **kwargs):
+            puts.append(kwargs["Key"])
+
+        def get_paginator(self, _name):
+            return type("P", (), {"paginate": lambda self, **kw: []})()
+
+    def fake_init(self, cfg):
+        self.cfg = cfg
+        self.client = FakeClient()
+        self.bucket = cfg.bucket
+        self.prefix = cfg.prefix.strip("/")
+        self.connect_timeout = cfg.connect_timeout_seconds
+        self.read_timeout = cfg.read_timeout_seconds
+        self.upload_timeout = cfg.upload_timeout_seconds
+        self.object_timeout = cfg.object_timeout_seconds
+        self.concurrency = max(1, cfg.upload_concurrency)
+        self.max_attempts = cfg.max_attempts
+
+    monkeypatch.setattr(R2Publisher, "__init__", fake_init)
+
+    times = [
+        datetime(2026, 9, 15, 16, 0, 0, tzinfo=timezone.utc),
+        datetime(2026, 9, 15, 16, 36, 41, tzinfo=timezone.utc),
+    ]
+
+    def fake_load(cfg, source, grib_path):
+        return synthetic_central_texas(valid_time=times.pop(0))
+
+    monkeypatch.setattr("mpwg_radar.cooker._load_frame", fake_load)
+
+    cfg = CookerConfig(
+        bbox=CENTRAL_TEXAS,
+        region_name="central-texas",
+        modes=["clean"],
+        min_zoom=6,
+        max_zoom=6,
+        tile_size=512,
+        skip_empty_tiles=True,
+        keep_dbz=False,
+        data_dir=tmp_path / "data",
+        output_dir=tmp_path,
+        upload=True,
+        retention_frames=5,
+        r2=R2Config(
+            account_id="abc",
+            access_key_id="AKIAEXAMPLE",
+            secret_access_key="secret",
+            bucket="mpwg-radar",
+            prefix="radar",
+        ),
+    )
+    first = cook(cfg, source="synthetic", upload=True)
+    assert first["frame_id"] == "20260915T160000Z"
+    assert any("20260915T160000Z" in key for key in puts)
+    puts.clear()
+
+    second = cook(cfg, source="synthetic", upload=True)
+    assert second["frame_id"] == "20260915T163641Z"
+    assert second["uploaded"] == len(puts)
+    assert second["upload_skipped"] >= 1
+    assert any("20260915T163641Z" in key for key in puts)
+    assert any("/latest/" in key for key in puts)
+    assert any(key.endswith("manifest.json") for key in puts)
+    assert all("20260915T160000Z" not in key for key in puts)

@@ -58,6 +58,13 @@ class R2Config:
     endpoint: str = ""
     prefix: str = "radar"
     public_base_url: str = ""
+    # Fail-fast upload limits. Defaults fit t4g.small → Cloudflare R2.
+    connect_timeout_seconds: float = 10.0
+    read_timeout_seconds: float = 30.0
+    object_timeout_seconds: float = 60.0
+    upload_timeout_seconds: float = 180.0
+    upload_concurrency: int = 2
+    max_attempts: int = 2
 
     @property
     def enabled(self) -> bool:
@@ -167,6 +174,18 @@ def load_config(overrides: Optional[dict] = None) -> CookerConfig:
             endpoint=os.environ.get("R2_ENDPOINT", "").strip(),
             prefix=os.environ.get("R2_PREFIX", "radar").strip().strip("/"),
             public_base_url=os.environ.get("R2_PUBLIC_BASE_URL", "").rstrip("/"),
+            connect_timeout_seconds=float(
+                os.environ.get("MPWG_UPLOAD_CONNECT_TIMEOUT", "10")
+            ),
+            read_timeout_seconds=float(
+                os.environ.get("MPWG_UPLOAD_READ_TIMEOUT", "30")
+            ),
+            object_timeout_seconds=float(
+                os.environ.get("MPWG_UPLOAD_OBJECT_TIMEOUT", "60")
+            ),
+            upload_timeout_seconds=float(os.environ.get("MPWG_UPLOAD_TIMEOUT", "180")),
+            upload_concurrency=int(os.environ.get("MPWG_UPLOAD_CONCURRENCY", "2")),
+            max_attempts=int(os.environ.get("MPWG_UPLOAD_MAX_ATTEMPTS", "2")),
         ),
         palette_id=os.environ.get("MPWG_PALETTE", "mpwg-clean-2026-09"),
     )

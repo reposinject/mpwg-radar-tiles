@@ -15,8 +15,13 @@ IOSchedulingClass=best-effort
 IOSchedulingPriority=6
 # t4g.small is 2 GB; abort if the OS is thrashing instead of cooking forever.
 # CONUS z6–8 is ~2302 candidate tiles/frame; 300s is headroom over the 3 min timer.
+# Application R2 upload also has MPWG_UPLOAD_TIMEOUT_SECONDS (default 120s).
+# TimeoutStopSec + SIGKILL so a stuck PUT cannot hold the oneshot open.
 MemoryMax=1536M
 TimeoutStartSec=300
+TimeoutStopSec=20
+KillMode=control-group
+KillSignal=SIGTERM
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=mpwg-radar

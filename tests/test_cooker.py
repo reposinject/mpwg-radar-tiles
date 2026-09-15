@@ -65,23 +65,12 @@ def test_r2_publisher_uses_boto3_when_env_set(tmp_path: Path, monkeypatch):
     uploaded = []
 
     class FakeClient:
-        def upload_file(self, local, bucket, key, ExtraArgs=None):
-            uploaded.append((local, bucket, key, ExtraArgs))
+        def put_object(self, **kwargs):
+            body = kwargs.get("Body")
+            if hasattr(body, "read"):
+                body.read()
+            uploaded.append(kwargs)
 
-    class FakeBoto3:
-        def client(self, *args, **kwargs):
-            return FakeClient()
-
-    import mpwg_radar.publish as pub
-
-    monkeypatch.setitem(__import__("sys").modules, "boto3", FakeBoto3())
-    monkeypatch.setitem(
-        __import__("sys").modules,
-        "botocore.config",
-        type("m", (), {"Config": lambda *a, **k: None}),
-    )
-
-    # Bypass real imports inside R2Publisher by injecting after construct.
     png = tmp_path / "0" / "1" / "2.png"
     png.parent.mkdir(parents=True)
     png.write_bytes(b"\x89PNG\r\n")
@@ -97,7 +86,66 @@ def test_r2_publisher_uses_boto3_when_env_set(tmp_path: Path, monkeypatch):
     publisher.client = FakeClient()
     publisher.bucket = cfg.bucket
     publisher.prefix = cfg.prefix
+    publisher.workers = 1
+    publisher.timeout_seconds = 30
     key = publisher.upload_file(png, "clean/latest/0/1/2.png")
     assert key == "radar/clean/latest/0/1/2.png"
-    assert uploaded[0][1] == "mpwg-radar"
-    assert uploaded[0][3]["ContentType"] == "image/png"
+    assert uploaded[0]["Bucket"] == "mpwg-radar"
+    assert uploaded[0]["ContentType"] == "image/png"
+
+
+def test_cook_calls_incremental_upload_cook(tmp_path: Path, monkeypatch):
+    calls = []
+
+    class FakePublisher:
+        def __init__(self, cfg, **kwargs):
+            calls.append({"cfg": cfg, "kwargs": kwargs})
+
+        def upload_cook(self, radar_root, *, frame_id, modes, all_frames=False):
+            calls.append(
+                {
+                    "radar_root": Path(radar_root),
+                    "frame_id": frame_id,
+                    "modes": list(modes),
+                    "all_frames": all_frames,
+                }
+            )
+            return ["radar/manifest.json"]
+
+        def delete_prefix(self, relative_prefix: str) -> int:
+            calls.append({"delete": relative_prefix})
+            return 0
+
+    monkeypatch.setattr("mpwg_radar.cooker.R2Publisher", FakePublisher)
+    cfg = CookerConfig(
+        bbox=CENTRAL_TEXAS,
+        region_name="central-texas",
+        modes=["clean"],
+        min_zoom=6,
+        max_zoom=7,
+        tile_size=512,
+        skip_empty_tiles=True,
+        keep_dbz=False,
+        data_dir=tmp_path / "data",
+        output_dir=tmp_path,
+        upload=True,
+        upload_all_frames=False,
+        r2=R2Config(
+            account_id="abc",
+            access_key_id="AKIAEXAMPLE",
+            secret_access_key="secret",
+            bucket="mpwg-radar",
+            upload_workers=4,
+            upload_timeout_seconds=120,
+        ),
+    )
+    result = cook(cfg, source="synthetic", upload=True)
+    upload_call = next(c for c in calls if "frame_id" in c)
+    assert upload_call["frame_id"] == result["frame_id"]
+    assert upload_call["modes"] == ["clean"]
+    assert upload_call["all_frames"] is False
+    assert upload_call["radar_root"] == tmp_path / "radar"
+    assert result["uploaded"] == 1
+    init = next(c for c in calls if "kwargs" in c)
+    assert init["kwargs"]["workers"] == 4
+    assert init["kwargs"]["timeout_seconds"] == 120

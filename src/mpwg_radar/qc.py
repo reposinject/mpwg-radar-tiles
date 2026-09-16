@@ -1,8 +1,13 @@
 """QC / cleanup on the physical dBZ grid (before colorization).
 
+This is not the Clean display cutoff. Tiles hide reflectivity below 15 dBZ
+in the palette (display-only); the float32 dBZ crop is written before this
+module runs. Clean mode still drops sub-10 dBZ clutter from the *mode* grid
+used for despeckle/smooth.
+
 Modes
 -----
-clean     default: hide < ~10 dBZ, drop speckles, mild 3×3 smooth
+clean     default: drop < ~10 dBZ clutter, despeckle, mild 3×3 smooth
 standard  scaffold: hide < ~5 dBZ, no despeckle/smooth
 all       scaffold: hide fill only (still masks -99/-999 no-coverage)
 """
@@ -34,7 +39,7 @@ MODES: Dict[str, ModeSpec] = {
         despeckle=True,
         min_component=8,
         smooth=True,
-        description="≥~10 dBZ, QC/despeckle, mild smooth (MPWG default)",
+        description="mode-grid clutter <~10 dBZ dropped, QC/despeckle, mild smooth (display cutoff is 15 dBZ in the palette)",
     ),
     "standard": ModeSpec(
         name="standard",

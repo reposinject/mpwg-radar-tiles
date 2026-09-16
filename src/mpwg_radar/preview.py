@@ -28,7 +28,7 @@ _PREVIEW = """<!DOCTYPE html>
 <body>
   <div id="map"></div>
   <div class="legend">
-    MPWG Clean · 512px XYZ · NOAA MRMS<br/>
+    MPWG Clean · 512px XYZ · NOAA MRMS · &lt;15 dBZ transparent<br/>
     <img src="radar/colorbar.png" alt="dBZ colorbar"/>
   </div>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>

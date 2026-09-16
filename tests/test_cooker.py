@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from datetime import datetime, timezone
@@ -34,13 +35,25 @@ def test_synthetic_cook_writes_manifest_and_512_tiles(tmp_path: Path):
     assert manifest["tile_size"] == 512
     assert manifest["default_mode"] == "clean"
     assert "clean" in manifest["modes"]
+    assert manifest["palette"]["display_min_dbz"] == 15
+    assert manifest["palette"]["stops"][0]["dbz"] == 15
+    assert manifest["palette"]["stops"][0]["rgba"] == [8, 119, 46, 255]
     tiles = list((tmp_path / "radar" / "clean").rglob("*.png"))
     assert tiles
     from PIL import Image
 
     with Image.open(tiles[0]) as im:
         assert im.size == (512, 512)
-    assert (tmp_path / "dbz" / f"{result['frame_id']}.npz").is_file()
+    dbz_path = tmp_path / "dbz" / f"{result['frame_id']}.npz"
+    assert dbz_path.is_file()
+    stored = np.load(dbz_path)
+    finite = stored["dbz"][np.isfinite(stored["dbz"])]
+    assert finite.size > 0
+    assert float(finite.min()) < 15.0  # display cutoff must not discard the crop
+
+    with Image.open(tmp_path / "radar" / "colorbar.png") as bar:
+        arr = np.array(bar)
+        assert tuple(int(c) for c in arr[0, 0]) == (8, 119, 46, 255)
 
 
 def test_default_conus_cook_writes_conus_manifest(tmp_path: Path):

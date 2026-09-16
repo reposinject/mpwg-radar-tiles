@@ -1,10 +1,13 @@
 """Decode NOAA MRMS GRIB2 without GDAL/eccodes.
 
-Operational MergedReflectivityQCComposite is a single GRIB2 message on a
-regular 0.01° CONUS lat/lon grid, packed with PNG (template 5.41). That lets
-a t4g.small cook CONUS tiles using only Pillow + numpy.
+Operational 2D CONUS mosaics (MergedReflectivityQCComposite, and the distinct
+ReflectivityAtLowestAltitude product) are a single GRIB2 message on a regular
+0.01° lat/lon grid, packed with PNG (template 5.41). That lets a t4g.small
+cook CONUS tiles using only Pillow + numpy.
 
-Physical dBZ is returned as float32; colorization happens later.
+The production cooker stays on MergedReflectivityQCComposite (QC column-max).
+See README "Product source". Physical dBZ is returned as float32; colorization
+happens later.
 """
 
 from __future__ import annotations

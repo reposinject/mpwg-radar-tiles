@@ -34,11 +34,12 @@ def synthetic_central_texas(
     core = np.exp(-((yy - 29.88) ** 2 + (xx + 97.94) ** 2) / (2 * 0.08**2))
     dbz_core = np.where(core > 0.15, 48.0 + 28.0 * core, np.nan)
 
-    # Austin metro light shower (barely tinted → light green).
+    # Austin metro light shower (straddles the 15 dBZ Clean display cutoff).
     shower = np.exp(-((yy - 30.27) ** 2 + (xx + 97.74) ** 2) / (2 * 0.22**2))
     dbz_shower = np.where(shower > 0.25, 8.0 + 22.0 * shower, np.nan)
 
-    # Faint returns (Standard/All). Clean mode drops these (<10 dBZ).
+    # Faint returns (Standard/All). Clean mode QC drops these (<10 dBZ);
+    # the Clean palette would hide them anyway (<15 dBZ display cutoff).
     faint = np.exp(-((yy - 31.15) ** 2 + (xx + 97.45) ** 2) / (2 * 0.16**2))
     dbz_faint = np.where(faint > 0.35, 6.0 + 5.0 * faint, np.nan)
 

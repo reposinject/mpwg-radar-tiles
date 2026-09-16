@@ -93,6 +93,7 @@ class CookerConfig:
     output_dir: Path = Path("./output")
     retention_frames: int = 30
     log_level: str = "INFO"
+    # NOAA MRMS QC column-max mosaic (not RALA). See README "Product source".
     mrms_latest_url: str = (
         "https://mrms.ncep.noaa.gov/2D/MergedReflectivityQCComposite/"
         "MRMS_MergedReflectivityQCComposite.latest.grib2.gz"

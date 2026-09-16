@@ -41,7 +41,8 @@ class BBox:
         }
 
 
-# NOAA MRMS MergedReflectivityQCComposite CONUS mosaic (0.01° grid):
+# NOAA MRMS CONUS mosaic (0.01° grid), production product
+# MergedReflectivityQCComposite (QC column-max; not RALA):
 # 20°N–55°N, 130°W–60°W. Covers the lower 48, Gulf of Mexico, near-shore
 # Atlantic/Pacific, northern Mexico, and southern Canada. Not Alaska/Hawaii.
 #

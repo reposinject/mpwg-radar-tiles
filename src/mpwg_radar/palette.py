@@ -1,7 +1,9 @@
 """dBZ → RGBA colorization, kept separate from the physical grid.
 
 The cooker always stores/resamples reflectivity in dBZ. This module is the
-only place that applies the MPWG Clean palette (James, Sep 2026).
+only place that applies the MPWG Clean palette (James, Sep 2026). The 15 dBZ
+Clean cutoff is a display threshold: colorize() does not mutate the input
+array, and values below the cutoff stay in the physical grid.
 """
 
 from __future__ import annotations
@@ -10,7 +12,7 @@ import json
 from dataclasses import dataclass
 from importlib import resources
 from pathlib import Path
-from typing import List, Sequence, Tuple, Union
+from typing import List, Optional, Tuple
 
 import numpy as np
 from PIL import Image
@@ -23,6 +25,7 @@ class PaletteStop:
     dbz: float
     rgba: RGBA
     label: str = ""
+    hex: str = ""
 
 
 @dataclass
@@ -34,19 +37,27 @@ class Palette:
     author: str = ""
     version: str = ""
     description: str = ""
+    display_min_dbz: Optional[float] = None
 
     def __post_init__(self) -> None:
         self.stops = sorted(self.stops, key=lambda s: s.dbz)
+        if self.display_min_dbz is None:
+            self.display_min_dbz = self.stops[0].dbz if self.stops else 0.0
         self._lut_dbz0 = -20.0
         self._lut_step = 0.1
         self._lut = self._build_lut()
 
     @property
     def min_dbz(self) -> float:
-        return self.stops[0].dbz if self.stops else 0.0
+        return float(self.display_min_dbz) if self.display_min_dbz is not None else 0.0
 
     def colorize(self, dbz: np.ndarray) -> np.ndarray:
-        """Map a dBZ array to uint8 RGBA. NaNs and below-min stay transparent."""
+        """Map a dBZ array to uint8 RGBA. Input is not modified.
+
+        NaNs and values below display_min_dbz stay transparent. Between
+        anchor stops, RGB is linearly interpolated against the actual dBZ
+        value (0.1 dBZ LUT); values are not quantized to 5 dBZ buckets.
+        """
         flat = np.asarray(dbz, dtype=np.float32)
         out = np.zeros(flat.shape + (4,), dtype=np.uint8)
         valid = np.isfinite(flat)
@@ -57,13 +68,19 @@ class Palette:
         idx = np.clip(idx, 0, len(self._lut) - 1)
         colored = self._lut[idx]
         out[valid] = colored[valid]
-        # Values below the first stop remain transparent even if finite.
-        below = valid & (flat < self.stops[0].dbz)
+        below = valid & (flat < self.min_dbz)
         out[below] = np.array(self.below_min, dtype=np.uint8)
         return out
 
-    def colorbar(self, width: int = 512, height: int = 48, dbz_min: float = 10, dbz_max: float = 75) -> Image.Image:
-        ramp = np.linspace(dbz_min, dbz_max, width, dtype=np.float32)
+    def colorbar(
+        self,
+        width: int = 512,
+        height: int = 48,
+        dbz_min: Optional[float] = None,
+        dbz_max: float = 75,
+    ) -> Image.Image:
+        lo = self.min_dbz if dbz_min is None else dbz_min
+        ramp = np.linspace(lo, dbz_max, width, dtype=np.float32)
         grid = np.repeat(ramp[np.newaxis, :], height, axis=0)
         rgba = self.colorize(grid)
         return Image.fromarray(rgba)
@@ -75,30 +92,39 @@ class Palette:
             "author": self.author,
             "version": self.version,
             "description": self.description,
+            "display_min_dbz": self.min_dbz,
             "stops": [
-                {"dbz": s.dbz, "rgba": list(s.rgba), "label": s.label}
+                {
+                    "dbz": s.dbz,
+                    "rgba": list(s.rgba),
+                    "hex": s.hex,
+                    "label": s.label,
+                }
                 for s in self.stops
             ],
         }
+
+    def _interpolate_rgba(self, dbz: float) -> np.ndarray:
+        """Linear RGB interpolation between neighboring anchors at `dbz`."""
+        xs = [s.dbz for s in self.stops]
+        ys = np.array([s.rgba for s in self.stops], dtype=np.float32)
+        cutoff = self.min_dbz
+        if dbz < cutoff:
+            return np.array(self.below_min, dtype=np.uint8)
+        if dbz >= xs[-1]:
+            return ys[-1].astype(np.uint8)
+        j = int(np.searchsorted(xs, dbz, side="right") - 1)
+        span = xs[j + 1] - xs[j]
+        t = 0.0 if span == 0 else (dbz - xs[j]) / span
+        return np.clip(ys[j] + t * (ys[j + 1] - ys[j]), 0, 255).astype(np.uint8)
 
     def _build_lut(self) -> np.ndarray:
         dbz_max = 80.0
         n = int(round((dbz_max - self._lut_dbz0) / self._lut_step)) + 1
         lut = np.zeros((n, 4), dtype=np.uint8)
-        xs = [s.dbz for s in self.stops]
-        ys = np.array([s.rgba for s in self.stops], dtype=np.float32)
         for i in range(n):
             dbz = self._lut_dbz0 + i * self._lut_step
-            if dbz < xs[0]:
-                lut[i] = self.below_min
-                continue
-            if dbz >= xs[-1]:
-                lut[i] = ys[-1]
-                continue
-            # linear interpolate in RGBA
-            j = int(np.searchsorted(xs, dbz, side="right") - 1)
-            t = (dbz - xs[j]) / (xs[j + 1] - xs[j])
-            lut[i] = np.clip(ys[j] + t * (ys[j + 1] - ys[j]), 0, 255)
+            lut[i] = self._interpolate_rgba(dbz)
         return lut
 
 
@@ -108,10 +134,12 @@ def _load_json(payload: dict) -> Palette:
             dbz=float(stop["dbz"]),
             rgba=tuple(int(c) for c in stop["rgba"]),  # type: ignore[arg-type]
             label=str(stop.get("label", "")),
+            hex=str(stop.get("hex", "")),
         )
         for stop in payload["stops"]
     ]
     below = tuple(int(c) for c in payload.get("below_min", [0, 0, 0, 0]))
+    display_min = payload.get("display_min_dbz")
     return Palette(
         id=payload.get("id", "custom"),
         name=payload.get("name", "custom"),
@@ -120,6 +148,7 @@ def _load_json(payload: dict) -> Palette:
         author=str(payload.get("author", "")),
         version=str(payload.get("version", "")),
         description=str(payload.get("description", "")),
+        display_min_dbz=float(display_min) if display_min is not None else None,
     )
 
 

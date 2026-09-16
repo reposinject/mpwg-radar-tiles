@@ -19,6 +19,8 @@ def test_cooker_config_defaults_are_conus_z6_8():
     assert cfg.max_zoom == CONUS_MAX_ZOOM == 8
     assert cfg.tile_size == 512
     assert cfg.modes == ["clean"]
+    assert "MergedReflectivityQCComposite" in cfg.mrms_latest_url
+    assert cfg.mrms_s3_prefix == "CONUS/MergedReflectivityQCComposite_00.50"
 
 
 def test_load_config_defaults(monkeypatch):

@@ -6,19 +6,19 @@ No paid radar vendor. Alaska and Hawaii are outside the NOAA MRMS CONUS mosaic.
 
 ## What it does
 
-1. Downloads free NOAA MRMS `MergedReflectivityQCComposite` (NCEP HTTP, AWS Open Data fallback).
+1. Downloads free NOAA MRMS `MergedReflectivityQCComposite` (QC column-max mosaic; NCEP HTTP, AWS Open Data fallback). See [Product source](#product-source).
 2. Decodes PNG-packed GRIB2 with Pillow (no GDAL/eccodes required).
 3. Crops the CONUS mosaic bbox immediately, then QC / colorize / tile.
-4. Stores a float32 dBZ grid (`output/dbz/{frame}.npz`) **before** colorization.
-5. Applies mode QC, then the Clean palette.
-6. Writes `{z}/{x}/{y}.png` at 512 px, transparent where there is no echo.
+4. Stores a float32 dBZ grid (`output/dbz/{frame}.npz`) **before** colorization. The 15 dBZ Clean cutoff is display-only and does not discard this grid.
+5. Applies mode QC, then the Clean palette (linear RGB interpolation on actual dBZ).
+6. Writes `{z}/{x}/{y}.png` at 512 px, fully transparent below 15 dBZ.
 7. Writes `frame.json` + `manifest.json`.
 8. Uploads **this cook's new frame + `latest` pointers + `manifest.json`** with **boto3** `put_object` to **Cloudflare R2** when `R2_*` env vars are set. Retained historical frames are not re-uploaded.
 9. Repeats about every 3 minutes via systemd.
 
 ### CONUS crop and zooms
 
-Default region **`conus`**: `west=-130, south=20, east=-60, north=55` — NOAA MRMS `MergedReflectivityQCComposite` mosaic (0.01° grid). Lower 48, Gulf, near-shore Atlantic/Pacific, northern Mexico, southern Canada. Not Alaska or Hawaii.
+Default region **`conus`**: `west=-130, south=20, east=-60, north=55` — NOAA MRMS CONUS mosaic (0.01° grid), production product `MergedReflectivityQCComposite`. Lower 48, Gulf, near-shore Atlantic/Pacific, northern Mexico, southern Canada. Not Alaska or Hawaii.
 
 Default zooms **6–8** (512 px tiles). Candidate tiles per frame (every XYZ cell that intersects the bbox, including empty ocean):
 
@@ -48,30 +48,48 @@ Env (also accepted as unprefixed `REGION` / `BBOX`):
 
 | Mode | Default | Behavior |
 | --- | --- | --- |
-| **clean** | yes | ≥ ~10 dBZ, despeckle, mild 3×3 smooth |
-| **standard** | scaffold | ≥ ~5 dBZ, no extra cleanup |
+| **clean** | yes | despeckle + mild 3×3 smooth; mode-grid clutter filter &lt; ~10 dBZ. Tiles use the palette display cutoff (&lt; 15 dBZ fully transparent). |
+| **standard** | scaffold | ≥ ~5 dBZ, no extra cleanup (same Clean palette, so &lt; 15 dBZ still transparent) |
 | **all** | scaffold | fill masked only (still hides MRMS `-99` / `-999`) |
 
 Timer cooks `clean` unless `MPWG_MODES=clean,standard,all`.
 
 NEXRAD Level-II is a source stub (`mpwg_radar.sources.NexradSource`) for later — not used in production.
 
+### Product source
+
+Production ingest stays on NOAA MRMS **`MergedReflectivityQCComposite`** (QC column-max mosaic). Confirmed Sep 2026:
+
+| NOAA name | What it is | Cooker |
+| --- | --- | --- |
+| **`MergedReflectivityQCComposite`** | Quality-controlled **composite** (column-max) reflectivity. NCEP `/2D/MergedReflectivityQCComposite/`, AWS `CONUS/MergedReflectivityQCComposite_00.50`. | **Used** (HTTP + S3 fallback) |
+| `ReflectivityAtLowestAltitude` | **RALA** — reflectivity at lowest altitude. Distinct product, not a composite. NWS MRMS v12.2 lists it as **unQC**. NCEP `/2D/ReflectivityAtLowestAltitude/`, AWS `CONUS/ReflectivityAtLowestAltitude_00.50`. | Not used |
+| `MergedReflectivityAtLowestAltitude` | Merged RALA sibling (same 0.01° grid). | Not used |
+
+There is no operational 2D GRIB2 named `ReflectivityAtLowestAltitudeQC`. Switching the cooker to RALA would change the field (lowest-altitude vs column-max) rather than swap an equivalent QC mosaic; the PNG GRIB2 decoder would likely still work, but it is not a drop-in for this locked Clean palette pass. Override later with `MRMS_LATEST_URL` / `MRMS_S3_PREFIX` if needed.
+
 ### MPWG Clean palette (James, Sep 2026)
 
-Color is applied only at tile time. One shade lighter than a heavy NWS precip ramp; no cyan/blue clear-air clutter.
+Color is applied only at tile time. Physical dBZ is never quantized to the color table. Between anchors, RGB is interpolated against **actual dBZ** (0.1 dBZ LUT) — not snapped to 5 dBZ buckets. No cyan/aqua in the ramp. Values **below 15 dBZ are fully transparent** (display cutoff only; the `output/dbz/{frame}.npz` crop keeps the numbers).
 
-| dBZ | Look |
-| --- | --- |
-| &lt; 10 | transparent (Clean) |
-| 10–15 | barely tinted green |
-| 15–25 | light green |
-| 25–35 | medium green |
-| 35–45 | yellow-green → yellow |
-| 45–55 | orange |
-| 55–65 | red |
-| 65+ | dark red / magenta (intense cores only) |
+| dBZ | Hex | RGB | Look |
+| --- | --- | --- | --- |
+| &lt; 15 | — | — | transparent |
+| 15 | `#08772E` | 8, 119, 46 | green |
+| 20 | `#0FA33D` | 15, 163, 61 | green |
+| 25 | `#32C94B` | 50, 201, 75 | green |
+| 30 | `#F4F20D` | 244, 242, 13 | yellow |
+| 35 | `#F4C20D` | 244, 194, 13 | gold |
+| 40 | `#F58A16` | 245, 138, 22 | orange |
+| 45 | `#F34A1F` | 243, 74, 31 | red-orange |
+| 50 | `#ED171C` | 237, 23, 28 | red |
+| 55 | `#C91427` | 201, 20, 39 | dark red |
+| 60 | `#E52AAE` | 229, 42, 174 | magenta |
+| 65 | `#B52ACB` | 181, 42, 203 | purple |
+| 70 | `#7828C8` | 120, 40, 200 | violet |
+| 75+ | `#D9B6FF` | 217, 182, 255 | lavender |
 
-Stops live in `src/mpwg_radar/palettes/mpwg-clean-2026-09.json`.
+Stops live in `src/mpwg_radar/palettes/mpwg-clean-2026-09.json`. `colorbar.png` is generated from the same table (15–75 dBZ).
 
 ## Layout
 
@@ -210,6 +228,21 @@ The oneshot unit runs:
 ```
 
 Memory is capped at 1536M. Default CONUS zooms are **6–8** (~2302 candidate tiles/frame). Empty tiles are skipped before the 512×512 render so a t4g.small can finish inside the 3 minute timer.
+
+### Deploy note — Sep 2026 Clean palette (15 dBZ display cutoff)
+
+Palette + cutoff only. No `/etc/mpwg-radar.env` product-URL change (still `MergedReflectivityQCComposite`). On the cooker host:
+
+```bash
+cd /opt/mpwg-radar          # or the clone you used
+sudo git pull origin main
+sudo bash deploy/ec2-setup.sh
+sudo systemctl restart mpwg-radar-cooker.timer
+sudo systemctl start mpwg-radar-cooker.service
+journalctl -u mpwg-radar-cooker.service -n 80 -f
+```
+
+Confirm the new `colorbar.png` and that `clean/latest` tiles are fully transparent below 15 dBZ. Physical `output/dbz/{frame}.npz` grids are unchanged (display threshold only).
 
 ### Deploy note — existing `/etc/mpwg-radar.env`
 

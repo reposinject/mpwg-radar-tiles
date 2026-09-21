@@ -1,13 +1,12 @@
 """Decode NOAA MRMS GRIB2 without GDAL/eccodes.
 
-Operational 2D CONUS mosaics (MergedReflectivityQCComposite, and the distinct
-ReflectivityAtLowestAltitude product) are a single GRIB2 message on a regular
-0.01° lat/lon grid, packed with PNG (template 5.41). That lets a t4g.small
-cook CONUS tiles using only Pillow + numpy.
+Operational 2D CONUS mosaics (MergedReflectivityQCComposite and
+ReflectivityAtLowestAltitude) are a single GRIB2 message on a regular 0.01°
+lat/lon grid, packed with PNG (template 5.41). That lets a t4g.small cook
+CONUS tiles using only Pillow + numpy.
 
-The production cooker stays on MergedReflectivityQCComposite (QC column-max).
-See README "Product source". Physical dBZ is returned as float32; colorization
-happens later.
+Physical dBZ is returned as float32 **plus** a category mask (valid / no-echo /
+missing). Colorization happens later and must not collapse missing into 0 dBZ.
 """
 
 from __future__ import annotations
@@ -25,11 +24,21 @@ import numpy as np
 from PIL import Image
 
 from mpwg_radar.geo import BBox, lon_to_180
+from mpwg_radar.products import (
+    CAT_MISSING,
+    CAT_NO_ECHO,
+    CAT_VALID,
+    NO_COVERAGE_VALUES,
+    NO_ECHO_VALUES,
+    VALID_DBZ_MAX,
+    VALID_DBZ_MIN,
+)
 
 log = logging.getLogger(__name__)
 
-# MRMS / NSSL sentinels. Kept as NaN in the physical grid.
-FILL_VALUES = (-999.0, -99.0, -3.0, -1.0)
+# Union of NSSL Missing + No Coverage sentinels. mask_fill() still collapses
+# both to NaN for callers that only need "not a dBZ". Prefer classify_dbz().
+FILL_VALUES = tuple(dict.fromkeys((*NO_ECHO_VALUES, *NO_COVERAGE_VALUES)))
 
 
 @dataclass
@@ -64,15 +73,30 @@ class GribGrid:
 
 @dataclass
 class ReflectivityFrame:
-    """Physical reflectivity crop. Colorization is a separate step."""
+    """Physical reflectivity crop. Colorization is a separate step.
 
-    dbz: np.ndarray  # float32, NaN = no echo / no coverage
+    `dbz` stores finite values only for CAT_VALID cells. No-echo and
+    missing/no-coverage are NaN in `dbz` and distinguished in `category`:
+
+    * CAT_VALID (1) — legitimate reflectivity, including very weak dBZ
+    * CAT_NO_ECHO (2) — NSSL Missing (-99); sampled, no return
+    * CAT_MISSING (0) — no coverage (-999 / -3) or non-physical
+    """
+
+    dbz: np.ndarray  # float32, NaN = not a valid reflectivity value
     lat: np.ndarray  # (ny,) degrees, north → south or south → north
     lon: np.ndarray  # (nx,) degrees in [-180, 180)
     valid_time: datetime
     product: str = "MergedReflectivityQCComposite"
     source: str = "NOAA MRMS"
     native_fill: Optional[np.ndarray] = None
+    category: Optional[np.ndarray] = None  # uint8, same shape as dbz
+
+    def __post_init__(self) -> None:
+        if self.category is None:
+            self.dbz, self.category = classify_dbz(self.dbz)
+        elif self.category.shape != self.dbz.shape:
+            raise ValueError("category shape must match dbz")
 
     @property
     def frame_id(self) -> str:
@@ -183,15 +207,41 @@ def _unpack_dbz(packed: np.ndarray, ref: float, e: int, d: int) -> np.ndarray:
     return values
 
 
+def classify_dbz(dbz: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """Split a packed MRMS dBZ grid into valid / no-echo / missing.
+
+    NSSL UserTable_MRMS_v12.2 for RALA and QC composite:
+    Missing=-99 (no-echo), No Coverage=-999. GRIB2 may also use -3 for
+    no coverage. -99 is classified **before** the physical-range floor so
+    it is not swallowed as missing by `value < -32`.
+    """
+    out = np.asarray(dbz, dtype=np.float32).copy()
+    cat = np.full(out.shape, CAT_VALID, dtype=np.uint8)
+
+    no_echo = np.zeros(out.shape, dtype=bool)
+    for fill in NO_ECHO_VALUES:
+        no_echo |= np.isclose(out, fill, atol=0.01)
+
+    miss = ~np.isfinite(out)
+    for fill in NO_COVERAGE_VALUES:
+        miss |= np.isclose(out, fill, atol=0.01)
+    miss |= (out < VALID_DBZ_MIN) & ~no_echo
+    miss |= out > VALID_DBZ_MAX
+    no_echo &= ~miss
+
+    cat[miss] = CAT_MISSING
+    cat[no_echo] = CAT_NO_ECHO
+    out[miss | no_echo] = np.nan
+    return out, cat
+
+
 def mask_fill(dbz: np.ndarray) -> np.ndarray:
-    """Replace MRMS sentinels and non-physical values with NaN."""
-    out = dbz.astype(np.float32, copy=True)
-    bad = ~np.isfinite(out)
-    for fill in FILL_VALUES:
-        bad |= np.isclose(out, fill, atol=0.01)
-    bad |= out < -32.0
-    bad |= out > 95.0
-    out[bad] = np.nan
+    """Replace MRMS sentinels and non-physical values with NaN.
+
+    No-echo and missing both become NaN. Use classify_dbz() when the
+    three-way mask must be preserved.
+    """
+    out, _cat = classify_dbz(dbz)
     return out
 
 
@@ -225,6 +275,7 @@ def decode_grib2(
     tmpl = ref = e = d = nbits = None
     png_payload: Optional[bytes] = None
     simple_payload: Optional[bytes] = None
+    bitmap: Optional[np.ndarray] = None
 
     for sec, data in _iter_sections(blob):
         if sec == 1:
@@ -235,7 +286,9 @@ def decode_grib2(
             tmpl, ref, e, d, nbits, _npts = _parse_section5(data)
         elif sec == 6:
             indicator = data[5]
-            if indicator not in (0, 255):
+            if indicator == 0 and grid is not None:
+                bitmap = _parse_bitmap(data[6:], grid.nj, grid.ni)
+            elif indicator not in (0, 255):
                 log.warning("GRIB2 bitmap indicator %s not applied", indicator)
         elif sec == 7:
             payload = data[5:]
@@ -280,13 +333,21 @@ def decode_grib2(
             float(lon.max()),
         )
 
-    dbz = mask_fill(_unpack_dbz(packed, ref, e, d))
+    unpacked = _unpack_dbz(packed, ref, e, d)
+    if bitmap is not None:
+        if bbox is not None:
+            bitmap = bitmap[row, col]
+        unpacked = unpacked.copy()
+        unpacked[~bitmap.astype(bool)] = NO_COVERAGE_VALUES[0]
+    dbz, category = classify_dbz(unpacked)
     log.info(
-        "Decoded %s valid=%s grid=%s echo_cells=%d max=%.1f",
+        "Decoded %s valid=%s grid=%s echo_cells=%d no_echo=%d missing=%d max=%.1f",
         product,
         valid_time.isoformat(),
         dbz.shape,
-        int(np.isfinite(dbz).sum()),
+        int((category == CAT_VALID).sum()),
+        int((category == CAT_NO_ECHO).sum()),
+        int((category == CAT_MISSING).sum()),
         float(np.nanmax(dbz)) if np.isfinite(dbz).any() else float("nan"),
     )
     return ReflectivityFrame(
@@ -295,7 +356,16 @@ def decode_grib2(
         lon=lon.astype(np.float32),
         valid_time=valid_time,
         product=product,
+        category=category,
     )
+
+
+def _parse_bitmap(payload: bytes, nj: int, ni: int) -> np.ndarray:
+    npts = nj * ni
+    bits = np.unpackbits(np.frombuffer(payload, dtype=np.uint8))
+    if bits.size < npts:
+        raise ValueError("GRIB2 bitmap is shorter than Nj×Ni")
+    return bits[:npts].reshape(nj, ni).astype(np.uint8)
 
 
 def _unpack_simple(

@@ -1,0 +1,26 @@
+[Unit]
+Description=MPWG NOAA MRMS RALA tile cooker (manual oneshot; not the production timer)
+After=network-online.target
+Wants=network-online.target
+Conflicts=mpwg-radar-cooker.service
+
+[Service]
+Type=oneshot
+User=mpwg
+Group=mpwg
+WorkingDirectory=/opt/mpwg-radar
+EnvironmentFile=-/etc/mpwg-radar.env
+# Force RALA endpoints even if /etc/mpwg-radar.env still has the composite URL.
+Environment=MPWG_PRODUCT=rala
+ExecStart=/bin/bash -c 'unset MRMS_LATEST_URL MRMS_S3_PREFIX; exec /opt/mpwg-radar/.venv/bin/mpwg-radar cook --product rala'
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=6
+MemoryMax=1536M
+TimeoutStartSec=300
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=mpwg-radar-rala
+
+[Install]
+WantedBy=multi-user.target

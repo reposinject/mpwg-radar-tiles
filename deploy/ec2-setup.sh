@@ -71,9 +71,10 @@ fi
 
 install -m 644 "$APP_ROOT/deploy/systemd/mpwg-radar-cooker.service" /etc/systemd/system/
 install -m 644 "$APP_ROOT/deploy/systemd/mpwg-radar-cooker.timer" /etc/systemd/system/
+install -m 644 "$APP_ROOT/deploy/systemd/mpwg-radar-cooker-rala.service" /etc/systemd/system/
 
 chown -R "$APP_USER:$APP_USER" "$APP_ROOT" "$DATA_ROOT" /var/log/mpwg-radar
-chown root:root /etc/systemd/system/mpwg-radar-cooker.service /etc/systemd/system/mpwg-radar-cooker.timer
+chown root:root /etc/systemd/system/mpwg-radar-cooker.service /etc/systemd/system/mpwg-radar-cooker.timer /etc/systemd/system/mpwg-radar-cooker-rala.service
 chown root:"$APP_USER" "$ENV_FILE"
 
 systemctl daemon-reload
@@ -86,6 +87,7 @@ echo "  App:     $APP_ROOT"
 echo "  Env:     $ENV_FILE"
 echo "  Timer:   systemctl status mpwg-radar-cooker.timer"
 echo "  Logs:    journalctl -u mpwg-radar-cooker.service -n 100 -f"
+echo "  RALA:    sudo systemctl start mpwg-radar-cooker-rala.service   # oneshot, not on the timer"
 echo "  Smoke:   sudo -u $APP_USER $APP_ROOT/.venv/bin/mpwg-radar smoke --out $DATA_ROOT/output/smoke"
 echo
 echo "Edit $ENV_FILE with R2 credentials, then: systemctl start mpwg-radar-cooker.service"

@@ -21,6 +21,8 @@ def test_cooker_config_defaults_are_conus_z6_8():
     assert cfg.modes == ["clean"]
     assert "MergedReflectivityQCComposite" in cfg.mrms_latest_url
     assert cfg.mrms_s3_prefix == "CONUS/MergedReflectivityQCComposite_00.50"
+    assert cfg.product_id == "composite"
+    assert cfg.product.mrms_name == "MergedReflectivityQCComposite"
 
 
 def test_load_config_defaults(monkeypatch):
@@ -30,11 +32,36 @@ def test_load_config_defaults(monkeypatch):
     monkeypatch.delenv("BBOX", raising=False)
     monkeypatch.delenv("MPWG_MIN_ZOOM", raising=False)
     monkeypatch.delenv("MPWG_MAX_ZOOM", raising=False)
+    monkeypatch.delenv("MPWG_PRODUCT", raising=False)
+    monkeypatch.delenv("MPWG_PALETTE", raising=False)
     cfg = load_config()
     assert cfg.region_name == "conus"
     assert cfg.bbox == CONUS
     assert cfg.min_zoom == 6
     assert cfg.max_zoom == 8
+    assert cfg.product_id == "composite"
+
+
+def test_load_config_product_rala_ignores_leftover_composite_url(monkeypatch):
+    monkeypatch.setenv("MPWG_PRODUCT", "rala")
+    monkeypatch.setenv(
+        "MRMS_LATEST_URL",
+        "https://mrms.ncep.noaa.gov/2D/MergedReflectivityQCComposite/"
+        "MRMS_MergedReflectivityQCComposite.latest.grib2.gz",
+    )
+    monkeypatch.setenv("MRMS_S3_PREFIX", "CONUS/MergedReflectivityQCComposite_00.50")
+    cfg = load_config()
+    assert cfg.product_id == "rala"
+    assert "ReflectivityAtLowestAltitude" in cfg.mrms_latest_url
+    assert cfg.mrms_s3_prefix == "CONUS/ReflectivityAtLowestAltitude_00.50"
+    assert cfg.palette_id == "mpwg-rala-2026-09"
+
+
+def test_cooker_config_product_rala_syncs_endpoints():
+    cfg = CookerConfig(product_id="rala")
+    assert "ReflectivityAtLowestAltitude" in cfg.mrms_latest_url
+    assert cfg.palette_id == "mpwg-rala-2026-09"
+    assert cfg.product.apply_dbz_floor is False
 
 
 def test_load_config_region_alias_and_central_texas(monkeypatch):

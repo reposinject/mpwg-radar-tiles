@@ -6,15 +6,15 @@ No paid radar vendor. Alaska and Hawaii are outside the NOAA MRMS CONUS mosaic.
 
 ## What it does
 
-1. Downloads free NOAA MRMS `MergedReflectivityQCComposite` (QC column-max mosaic; NCEP HTTP, AWS Open Data fallback). See [Product source](#product-source).
+1. Downloads free NOAA MRMS. **Production default** is `MergedReflectivityQCComposite` (QC column-max). Phase 1 also cooks **RALA** (`ReflectivityAtLowestAltitude`) as a parallel product. See [Product source](#product-source).
 2. Decodes PNG-packed GRIB2 with Pillow (no GDAL/eccodes required).
 3. Crops the CONUS mosaic bbox immediately, then QC / colorize / tile.
-4. Stores a float32 dBZ grid (`output/dbz/{frame}.npz`) **before** colorization. The 15 dBZ Clean cutoff is display-only and does not discard this grid.
-5. Applies mode QC, then the Clean palette (linear RGB interpolation on actual dBZ).
-6. Writes `{z}/{x}/{y}.png` at 512 px, fully transparent below 15 dBZ.
-7. Writes `frame.json` + `manifest.json`.
-8. Uploads **this cook's new frame + `latest` pointers + `manifest.json`** with **boto3** `put_object` to **Cloudflare R2** when `R2_*` env vars are set. Retained historical frames are not re-uploaded.
-9. Repeats about every 3 minutes via systemd.
+4. Stores a float32 dBZ grid plus a **valid / no-echo / missing** mask (`output/dbz/{frame}.npz`) **before** colorization.
+5. Applies mode QC, then the palette (linear RGB interpolation on actual dBZ). Composite Clean keeps the 15 dBZ display cutoff. RALA uses a sibling palette with `display_min_dbz=0` for **valid returns only**.
+6. Writes `{z}/{x}/{y}.png` at 512 px.
+7. Writes `frame.json` + `manifest.json` (manifest lists available products and the default).
+8. Uploads **this cook's new frame + `latest` pointers + `manifest.json`** with **boto3** `put_object` to **Cloudflare R2** when `R2_*` env vars are set. Other products on disk are not re-uploaded.
+9. Repeats about every 3 minutes via systemd (**composite only** on the timer).
 
 ### CONUS crop and zooms
 
@@ -43,14 +43,17 @@ Env (also accepted as unprefixed `REGION` / `BBOX`):
 | `MPWG_MAX_ZOOM` | `8` | Inclusive; do not set `9` on t4g.small |
 | `MPWG_TILE_SIZE` | `512` | Production contract |
 | `MPWG_MODES` | `clean` | `clean`, or `clean,standard,all` |
+| `MPWG_PRODUCT` | `composite` | `composite` or `rala`. Timer stays `composite`. |
+| `MPWG_DISPLAY_MIN_DBZ` | (palette JSON) | Optional display cutoff override. Composite JSON=15, RALA JSON=0. |
+| `MPWG_PALETTE` | (per product) | Optional. Composite `mpwg-clean-2026-09`; RALA `mpwg-rala-2026-09`. |
 
 ### Modes
 
 | Mode | Default | Behavior |
 | --- | --- | --- |
-| **clean** | yes | despeckle + mild 3×3 smooth; mode-grid clutter filter &lt; ~10 dBZ. Tiles use the palette display cutoff (&lt; 15 dBZ fully transparent). |
-| **standard** | scaffold | ≥ ~5 dBZ, no extra cleanup (same Clean palette, so &lt; 15 dBZ still transparent) |
-| **all** | scaffold | fill masked only (still hides MRMS `-99` / `-999`) |
+| **clean** | yes | despeckle + mild 3×3 smooth. **Composite** also drops mode-grid clutter &lt; ~10 dBZ; tiles use the 15 dBZ Clean display cutoff. **RALA** does not apply a 10/15/20 dBZ floor (valid weak returns kept); display_min is 0 for valid cells only. |
+| **standard** | scaffold | ≥ ~5 dBZ, no extra cleanup (composite Clean palette still hides &lt; 15 dBZ) |
+| **all** | scaffold | fill masked only (no-echo `-99` and no-coverage `-999` stay masked) |
 
 Timer cooks `clean` unless `MPWG_MODES=clean,standard,all`.
 
@@ -58,15 +61,19 @@ NEXRAD Level-II is a source stub (`mpwg_radar.sources.NexradSource`) for later �
 
 ### Product source
 
-Production ingest stays on NOAA MRMS **`MergedReflectivityQCComposite`** (QC column-max mosaic). Confirmed Sep 2026:
+Production ingest stays on NOAA MRMS **`MergedReflectivityQCComposite`** until James signs off. Phase 1 adds **RALA** as a second cook path (`MPWG_PRODUCT=rala` or `mpwg-radar cook --product rala`). Confirmed against NSSL MRMS v12.2 GRIB2 tables ([mrms-support UserTable](https://github.com/NOAA-National-Severe-Storms-Laboratory/mrms-support/blob/main/GRIB2_TABLES/UserTable_MRMS_v12.2.csv)):
 
-| NOAA name | What it is | Cooker |
-| --- | --- | --- |
-| **`MergedReflectivityQCComposite`** | Quality-controlled **composite** (column-max) reflectivity. NCEP `/2D/MergedReflectivityQCComposite/`, AWS `CONUS/MergedReflectivityQCComposite_00.50`. | **Used** (HTTP + S3 fallback) |
-| `ReflectivityAtLowestAltitude` | **RALA** — reflectivity at lowest altitude. Distinct product, not a composite. NWS MRMS v12.2 lists it as **unQC**. NCEP `/2D/ReflectivityAtLowestAltitude/`, AWS `CONUS/ReflectivityAtLowestAltitude_00.50`. | Not used |
-| `MergedReflectivityAtLowestAltitude` | Merged RALA sibling (same 0.01° grid). | Not used |
+| NOAA name | Param | QC? | Cooker |
+| --- | --- | --- | --- |
+| **`MergedReflectivityQCComposite`** | 209.10.0 | **QC** column-max composite. NCEP `/2D/MergedReflectivityQCComposite/`, AWS `CONUS/MergedReflectivityQCComposite_00.50`. | **Production default** (`composite`) |
+| **`ReflectivityAtLowestAltitude`** | 209.3.57 | Operational **RALA**. WDTD: derived from the 3D reflectivity cube (clutter / AP / bioscatter removed; bright band remains). NSSL table does **not** label it non-QC. Sentinels: Missing=**-99** (no-echo), No Coverage=**-999**. NCEP `/2D/ReflectivityAtLowestAltitude/`, AWS `CONUS/ReflectivityAtLowestAltitude_00.50`. | **Phase 1** (`rala`) |
+| `MergedReflectivityAtLowestAltitude` | 209.3.58 | NSSL: **"Non Quality Controlled Reflectivity At Lowest Altitude"**. | Not used |
 
-There is no operational 2D GRIB2 named `ReflectivityAtLowestAltitudeQC`. Switching the cooker to RALA would change the field (lowest-altitude vs column-max) rather than swap an equivalent QC mosaic; the PNG GRIB2 decoder would likely still work, but it is not a drop-in for this locked Clean palette pass. Override later with `MRMS_LATEST_URL` / `MRMS_S3_PREFIX` if needed.
+RadarScope **Typed Reflectivity at Lowest Altitude** is this RALA **dBZ field** colored by MRMS `PrecipFlag` (rain / snow / convection / …). Public NOAA does not ship a single typed-RALA GRIB2. This pass ingests the dBZ field only.
+
+There is no operational 2D GRIB2 named `ReflectivityAtLowestAltitudeQC`. Do not “fix too much green” by blanking all values below 10/15/20 dBZ on RALA — missing/no-echo are a **category mask**, not a reflectivity cutoff. Composite Clean still uses `display_min_dbz=15` and Clean-mode clutter &lt; ~10 dBZ. RALA uses palette `mpwg-rala-2026-09` (`display_min_dbz=0`) for **valid** returns only.
+
+`MRMS_LATEST_URL` / `MRMS_S3_PREFIX` remain composite-era overrides. A leftover composite URL in `/etc/mpwg-radar.env` is ignored when cooking `rala`.
 
 ### MPWG Clean palette (James, Sep 2026)
 
@@ -91,6 +98,8 @@ Color is applied only at tile time. Physical dBZ is never quantized to the color
 
 Stops live in `src/mpwg_radar/palettes/mpwg-clean-2026-09.json`. `colorbar.png` is generated from the same table (15–75 dBZ).
 
+RALA tiles use `src/mpwg_radar/palettes/mpwg-rala-2026-09.json`: same Clean anchors from 15 dBZ up, plus a 0 dBZ stop, `display_min_dbz=0`. No-echo and missing stay transparent via the category mask.
+
 ## Layout
 
 ```
@@ -104,12 +113,15 @@ scripts/smoke_test.sh
 Output:
 
 ```
-output/radar/clean/{frameId}/{z}/{x}/{y}.png
+output/radar/clean/{frameId}/{z}/{x}/{y}.png          # composite (production path)
 output/radar/clean/{frameId}/frame.json
 output/radar/clean/latest/...
-output/radar/manifest.json
-output/radar/colorbar.png
-output/dbz/{frameId}.npz          # physical crop, local by default
+output/radar/rala/clean/{frameId}/{z}/{x}/{y}.png     # RALA
+output/radar/rala/clean/latest/...
+output/radar/manifest.json                            # lists products + default
+output/radar/colorbar.png                             # composite Clean ramp
+output/radar/rala/colorbar.png                        # RALA ramp (display_min 0)
+output/dbz/{frameId}.npz                              # physical crop + category mask
 ```
 
 XYZ indices match OSM/Google. Each PNG is 512×512 covering the **same** geographic extent as a 256 px slippy tile at that z/x/y.
@@ -275,6 +287,50 @@ journalctl -u mpwg-radar-cooker.service -n 80 -f
 
 Confirm the new `manifest.json` has `"region": "conus"`, the CONUS bbox, and `min_zoom`/`max_zoom` 6–8. Map clients that still request z9 should set `maxzoom` / `maxNativeZoom` to 8 (or overzoom from z8).
 
+### Deploy note — Phase 1 RALA (do not switch the timer)
+
+Composite production stays on the 3-minute timer. RALA is a **manual oneshot** so a t4g.small is not cooking two CONUS mosaics at once.
+
+```bash
+cd /opt/mpwg-radar
+sudo git pull origin main
+sudo bash deploy/ec2-setup.sh     # installs mpwg-radar-cooker-rala.service; does not enable a RALA timer
+```
+
+Leave `/etc/mpwg-radar.env` at `MPWG_PRODUCT=composite` (or unset). Confirm the timer is still composite:
+
+```bash
+sudo systemctl status mpwg-radar-cooker.timer
+sudo systemctl start mpwg-radar-cooker.service
+journalctl -u mpwg-radar-cooker.service -n 80 -f
+# public tiles remain: /radar/clean/latest/{z}/{x}/{y}.png
+```
+
+Cook one RALA frame when the composite oneshot is **idle**:
+
+```bash
+sudo systemctl start mpwg-radar-cooker-rala.service
+journalctl -u mpwg-radar-cooker-rala.service -n 80 -f
+```
+
+The rala unit unsets leftover `MRMS_LATEST_URL` / `MRMS_S3_PREFIX` from the env file and runs `mpwg-radar cook --product rala`. Equivalent manual command:
+
+```bash
+sudo -u mpwg bash -c 'unset MRMS_LATEST_URL MRMS_S3_PREFIX; export MPWG_PRODUCT=rala
+  /opt/mpwg-radar/.venv/bin/mpwg-radar cook --product rala --no-upload   # local only
+'
+```
+
+**Preview URL** (with `R2_PREFIX=radar`):
+
+```
+https://YOUR_DOMAIN/radar/rala/clean/latest/{z}/{x}/{y}.png
+```
+
+`manifest.json` `default_product` stays `"composite"`. `products.rala.latest` is the RALA template. Composite `clean/latest` is not rewritten by a RALA cook.
+
+Do **not** set `MPWG_PRODUCT=rala` in `/etc/mpwg-radar.env` until James signs off — that would make the 3-minute timer cook RALA instead of composite.
+
 ### Deploy note — R2 upload hang on t4g.small (CONUS)
 
 If cook finishes locally (`manifest.json` + tiles under `output/radar/clean/{frameId}/`) but the process sits in `futex_wait` during R2 upload and the public CDN stays stale:
@@ -347,7 +403,13 @@ map.addLayer({
 });
 ```
 
-If `R2_PREFIX=radar`, the path is `/radar/clean/latest/{z}/{x}/{y}.png`. Poll `manifest.json` for animation frames.
+If `R2_PREFIX=radar`, the path is `/radar/clean/latest/{z}/{x}/{y}.png`. Poll `manifest.json` for animation frames and `products`.
+
+RALA preview (after a rala cook; production default stays composite):
+
+```js
+tiles: ['https://YOUR_DOMAIN/radar/rala/clean/latest/{z}/{x}/{y}.png']
+```
 
 ## Dependencies
 

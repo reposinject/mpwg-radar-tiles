@@ -8,7 +8,7 @@ Serves cooked radar objects from the R2 bucket with CORS headers so a browser ma
 | --- | --- |
 | `RADAR_BUCKET` | R2 bucket the EC2 cooker uploads to (`R2_BUCKET`) |
 
-Keys match cooker output: `clean/latest/{z}/{x}/{y}.png`, `manifest.json`, `colorbar.png`. If `R2_PREFIX=radar`, either set the Worker to strip a prefix or upload with an empty prefix.
+Keys match cooker output: `clean/latest/{z}/{x}/{y}.png` (composite), `rala/clean/latest/{z}/{x}/{y}.png`, `manifest.json`, `colorbar.png`. If `R2_PREFIX=radar`, either set the Worker to strip a prefix or upload with an empty prefix.
 
 ## Deploy
 

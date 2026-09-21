@@ -8,6 +8,7 @@ import numpy as np
 
 from mpwg_radar.geo import CENTRAL_TEXAS
 from mpwg_radar.grib import ReflectivityFrame, mask_fill
+from mpwg_radar.products import CAT_NO_ECHO, CAT_VALID
 
 
 def synthetic_central_texas(
@@ -61,11 +62,15 @@ def synthetic_central_texas(
         if not np.isfinite(dbz[j, i]):
             dbz[j, i] = 22.0
 
+    dbz = mask_fill(dbz)
+    category = np.full(dbz.shape, CAT_NO_ECHO, dtype=np.uint8)
+    category[np.isfinite(dbz)] = CAT_VALID
     return ReflectivityFrame(
-        dbz=mask_fill(dbz),
+        dbz=dbz,
         lat=lat,
         lon=lon,
         valid_time=valid_time or datetime(2026, 9, 14, 17, 12, tzinfo=timezone.utc),
         product="SyntheticReflectivity",
         source="synthetic",
+        category=category,
     )

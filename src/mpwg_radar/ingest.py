@@ -29,7 +29,7 @@ def _request(url: str, timeout: int, user_agent: str) -> bytes:
 
 
 def download_latest_mrms(cfg: CookerConfig, dest_dir: Path) -> Path:
-    """Download the latest CONUS composite and return the local gzip path."""
+    """Download the latest CONUS field for cfg.product_id and return the gzip path."""
     dest_dir.mkdir(parents=True, exist_ok=True)
     errors = []
     try:
@@ -49,11 +49,11 @@ def download_latest_mrms(cfg: CookerConfig, dest_dir: Path) -> Path:
 
 def _download_ncep(cfg: CookerConfig, dest_dir: Path) -> Path:
     url = cfg.mrms_latest_url
-    log.info("Downloading MRMS latest from NCEP %s", url)
+    log.info("Downloading MRMS %s latest from NCEP %s", cfg.product_id, url)
     payload = _request(url, cfg.mrms_timeout_seconds, cfg.user_agent)
     if len(payload) < 1000:
         raise IngestError(f"NCEP response too small ({len(payload)} bytes)")
-    dest = dest_dir / "MRMS_MergedReflectivityQCComposite.latest.grib2.gz"
+    dest = dest_dir / f"MRMS_{cfg.product.mrms_name}.latest.grib2.gz"
     dest.write_bytes(payload)
     log.info("Saved %s (%d bytes)", dest, dest.stat().st_size)
     return dest

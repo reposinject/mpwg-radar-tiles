@@ -72,13 +72,19 @@ fi
 install -m 644 "$APP_ROOT/deploy/systemd/mpwg-radar-cooker.service" /etc/systemd/system/
 install -m 644 "$APP_ROOT/deploy/systemd/mpwg-radar-cooker.timer" /etc/systemd/system/
 install -m 644 "$APP_ROOT/deploy/systemd/mpwg-radar-cooker-rala.service" /etc/systemd/system/
+install -m 644 "$APP_ROOT/deploy/systemd/mpwg-radar-cooker-rala.timer" /etc/systemd/system/
 
 chown -R "$APP_USER:$APP_USER" "$APP_ROOT" "$DATA_ROOT" /var/log/mpwg-radar
-chown root:root /etc/systemd/system/mpwg-radar-cooker.service /etc/systemd/system/mpwg-radar-cooker.timer /etc/systemd/system/mpwg-radar-cooker-rala.service
+chown root:root \
+  /etc/systemd/system/mpwg-radar-cooker.service \
+  /etc/systemd/system/mpwg-radar-cooker.timer \
+  /etc/systemd/system/mpwg-radar-cooker-rala.service \
+  /etc/systemd/system/mpwg-radar-cooker-rala.timer
 chown root:"$APP_USER" "$ENV_FILE"
 
 systemctl daemon-reload
 systemctl enable --now mpwg-radar-cooker.timer
+systemctl enable --now mpwg-radar-cooker-rala.timer
 systemctl start mpwg-radar-cooker.service || true
 
 echo
@@ -86,10 +92,10 @@ echo "Installed MPWG radar cooker."
 echo "  App:     $APP_ROOT"
 echo "  Env:     $ENV_FILE"
 echo "  Timer:   systemctl status mpwg-radar-cooker.timer"
+echo "  RALA:    systemctl status mpwg-radar-cooker-rala.timer"
+echo "           (parallel; does not stop the composite timer. Leave MPWG_PRODUCT=composite.)"
 echo "  Logs:    journalctl -u mpwg-radar-cooker.service -n 100 -f"
-echo "  RALA:    stop mpwg-radar-cooker.timer first (unit Conflicts with composite),"
-echo "           then: sudo systemctl start mpwg-radar-cooker-rala.service"
-echo "           TimeoutStartSec=1800; default MPWG_UPLOAD_TIMEOUT=900"
+echo "           journalctl -u mpwg-radar-cooker-rala.service -n 100 -f"
 echo "  Smoke:   sudo -u $APP_USER $APP_ROOT/.venv/bin/mpwg-radar smoke --out $DATA_ROOT/output/smoke"
 echo
 echo "Edit $ENV_FILE with R2 credentials, then: systemctl start mpwg-radar-cooker.service"

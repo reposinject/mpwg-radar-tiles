@@ -1,0 +1,19 @@
+[Unit]
+Description=Cook NOAA MRMS RALA tiles every 2 minutes (parallel to composite)
+Requires=mpwg-radar-cooker-rala.service
+
+[Timer]
+# Composite uses OnBootSec=45s. Start RALA later so the two CONUS cooks
+# do not begin on the same second after boot. They are allowed to overlap;
+# the service does not Conflicts= the composite unit.
+# MRMS publishes ReflectivityAtLowestAltitude about every 2 minutes (same
+# grid as composite). OnUnitActiveSec=2min tracks that. A cook longer than
+# 2 minutes delays the next shot; it does not stack a second RALA cook.
+OnBootSec=2min
+OnUnitActiveSec=2min
+AccuracySec=15s
+Persistent=true
+Unit=mpwg-radar-cooker-rala.service
+
+[Install]
+WantedBy=timers.target

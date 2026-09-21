@@ -211,12 +211,17 @@ class R2Publisher:
         frame_id: str,
         modes: Sequence[str],
         product_id: str = DEFAULT_PRODUCT_ID,
+        include_manifest: bool = True,
     ) -> UploadStats:
         """Upload this cook's new frame + latest pointers + manifest.
 
         Does not re-walk retained historical frames onto the wire.
         Manifest is last so a failed cook leaves CDN on the previous frame.
         Other products (e.g. composite while cooking rala) are skipped.
+
+        Pass include_manifest=False when the caller will merge manifest.json
+        under a file lock and PUT it afterwards. That keeps a parallel cook
+        from uploading a snapshot that dropped the other product.
         """
         groups, skipped = classify_radar_files(
             local_root, frame_id, modes, product_id=product_id
@@ -225,8 +230,9 @@ class R2Publisher:
             ("frame", groups["frame"]),
             ("root", groups["root"]),
             ("latest", groups["latest"]),
-            ("manifest", groups["manifest"]),
         ]
+        if include_manifest:
+            phases.append(("manifest", groups["manifest"]))
         total = sum(len(items) for _, items in phases)
         stats = UploadStats(started=total, skipped=skipped)
         t0 = time.monotonic()
@@ -263,6 +269,20 @@ class R2Publisher:
             raise
         stats.duration_seconds = time.monotonic() - t0
         log.info("R2 upload complete %s", stats.as_log_fields())
+        return stats
+
+    def upload_manifest(self, local_root: Path) -> UploadStats:
+        """PUT manifest.json only. Caller must hold the manifest lock."""
+        path = local_root / "manifest.json"
+        if not path.is_file():
+            raise UploadError(f"manifest missing at {path}")
+        t0 = time.monotonic()
+        stats = UploadStats(started=1)
+        key = self.upload_file(path, "manifest.json")
+        stats.uploaded = 1
+        stats.keys.append(key)
+        stats.duration_seconds = time.monotonic() - t0
+        log.info("R2 manifest upload complete %s", stats.as_log_fields())
         return stats
 
     def upload_tree(self, local_root: Path, relative_root: str = "") -> UploadStats:

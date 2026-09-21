@@ -204,7 +204,7 @@ Optional upload limits (defaults are safe on t4g.small):
 | `MPWG_UPLOAD_CONNECT_TIMEOUT` | `10` | boto3 connect timeout (seconds) |
 | `MPWG_UPLOAD_READ_TIMEOUT` | `30` | boto3 read timeout (seconds) |
 | `MPWG_UPLOAD_OBJECT_TIMEOUT` | `60` | Fail if no object completes in this many seconds |
-| `MPWG_UPLOAD_TIMEOUT` | `180` | Fail the whole upload after this many seconds |
+| `MPWG_UPLOAD_TIMEOUT` | `900` | Whole-upload deadline (seconds). CONUS on t4g.small at concurrency=2 is a few objects/sec (~800–1000 objects/frame; a RALA oneshot is ~230s for ~866 objects). 180s left failed uploads every cycle. |
 | `MPWG_UPLOAD_MAX_ATTEMPTS` | `2` | botocore attempts (initial + 1 retry) |
 
 Logs look like: `R2 upload start objects=N skipped=M concurrency=2 …` then `R2 upload complete started=N uploaded=N failed=0 skipped=M duration=12.34s`. `status.json` records `uploaded`, `upload_skipped`, and `upload_duration_seconds`.
@@ -239,7 +239,7 @@ The oneshot unit runs:
 /opt/mpwg-radar/.venv/bin/mpwg-radar cook
 ```
 
-Memory is capped at 1536M. Default CONUS zooms are **6–8** (~2302 candidate tiles/frame). Empty tiles are skipped before the 512×512 render so a t4g.small can finish inside the 3 minute timer.
+Memory is capped at 1536M. Default CONUS zooms are **6–8** (~2302 candidate tiles/frame). Empty tiles are skipped before the 512×512 render so a t4g.small can finish the tile pass inside the 3 minute timer. Both oneshot units set `TimeoutStartSec=1800` so systemd does not SIGTERM the process while R2 upload is still inside the 900s `MPWG_UPLOAD_TIMEOUT`. A long cook delays the next timer shot; it does not change the composite product.
 
 ### Deploy note — Sep 2026 Clean palette (15 dBZ display cutoff)
 
@@ -306,14 +306,31 @@ journalctl -u mpwg-radar-cooker.service -n 80 -f
 # public tiles remain: /radar/clean/latest/{z}/{x}/{y}.png
 ```
 
-Cook one RALA frame when the composite oneshot is **idle**:
+The rala unit unsets leftover `MRMS_LATEST_URL` / `MRMS_S3_PREFIX` from the env file and runs `mpwg-radar cook --product rala`. It `Conflicts=` with `mpwg-radar-cooker.service`, so starting it stops a running composite cook — and the composite **timer** can start composite again and stop a long RALA run. A CONUS RALA upload needs the 900s `MPWG_UPLOAD_TIMEOUT` (about 230s for ~866 objects on this host) and `TimeoutStartSec=1800` on the unit. Pause the composite timer for the run:
 
 ```bash
+sudo systemctl stop mpwg-radar-cooker.timer
 sudo systemctl start mpwg-radar-cooker-rala.service
-journalctl -u mpwg-radar-cooker-rala.service -n 80 -f
+journalctl -u mpwg-radar-cooker-rala.service -n 120 -f
+sudo systemctl start mpwg-radar-cooker.timer
 ```
 
-The rala unit unsets leftover `MRMS_LATEST_URL` / `MRMS_S3_PREFIX` from the env file and runs `mpwg-radar cook --product rala`. Equivalent manual command:
+One-off without the installed unit (same elevated timeout):
+
+```bash
+sudo systemctl stop mpwg-radar-cooker.timer
+sudo systemd-run --unit=mpwg-radar-rala-oneshot --collect \
+  --property=Type=oneshot \
+  --property=TimeoutStartSec=1800 \
+  --property=User=mpwg --property=Group=mpwg \
+  --property=WorkingDirectory=/opt/mpwg-radar \
+  --property=EnvironmentFile=/etc/mpwg-radar.env \
+  --property=Environment=MPWG_PRODUCT=rala \
+  /bin/bash -c 'unset MRMS_LATEST_URL MRMS_S3_PREFIX; exec /opt/mpwg-radar/.venv/bin/mpwg-radar cook --product rala'
+sudo systemctl start mpwg-radar-cooker.timer
+```
+
+Equivalent manual command:
 
 ```bash
 sudo -u mpwg bash -c 'unset MRMS_LATEST_URL MRMS_S3_PREFIX; export MPWG_PRODUCT=rala
@@ -335,7 +352,7 @@ Do **not** set `MPWG_PRODUCT=rala` in `/etc/mpwg-radar.env` until James signs of
 
 If cook finishes locally (`manifest.json` + tiles under `output/radar/clean/{frameId}/`) but the process sits in `futex_wait` during R2 upload and the public CDN stays stale:
 
-1. Stop the hung oneshot (systemd `TimeoutStartSec=300` should eventually SIGTERM it):
+1. Stop the hung oneshot (systemd `TimeoutStartSec=1800` on the composite unit should eventually SIGTERM it):
 
 ```bash
 sudo systemctl stop mpwg-radar-cooker.service
@@ -357,7 +374,7 @@ MPWG_UPLOAD_CONCURRENCY=2
 MPWG_UPLOAD_CONNECT_TIMEOUT=10
 MPWG_UPLOAD_READ_TIMEOUT=30
 MPWG_UPLOAD_OBJECT_TIMEOUT=60
-MPWG_UPLOAD_TIMEOUT=180
+MPWG_UPLOAD_TIMEOUT=900
 MPWG_UPLOAD_MAX_ATTEMPTS=2
 ```
 
@@ -370,7 +387,7 @@ sudo systemctl start mpwg-radar-cooker.service
 journalctl -u mpwg-radar-cooker.service -n 120 -f
 ```
 
-Success looks like `R2 upload start` with `frame=<N> latest=<N>` (one frame, not the full retention) and `R2 upload complete … failed=0` in well under the 180s upload deadline. Then `curl` the public `manifest.json` / `clean/latest/…` and confirm `latest_frame` matches the cook `frame_id`.
+Success looks like `R2 upload start` with `frame=<N> latest=<N>` (one frame, not the full retention) and `R2 upload complete … failed=0` inside the 900s upload deadline. A typical CONUS frame is ~800–1000 objects. If `/etc/mpwg-radar.env` still sets `MPWG_UPLOAD_TIMEOUT=180`, remove that line so the new default applies. Then `curl` the public `manifest.json` / `clean/latest/…` and confirm `latest_frame` matches the cook `frame_id`.
 
 A failed upload raises and leaves the previous `latest` + manifest on the CDN (manifest is written last). The next timer shot retries.
 

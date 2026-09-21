@@ -34,12 +34,14 @@ def test_load_config_defaults(monkeypatch):
     monkeypatch.delenv("MPWG_MAX_ZOOM", raising=False)
     monkeypatch.delenv("MPWG_PRODUCT", raising=False)
     monkeypatch.delenv("MPWG_PALETTE", raising=False)
+    monkeypatch.delenv("MPWG_UPLOAD_TIMEOUT", raising=False)
     cfg = load_config()
     assert cfg.region_name == "conus"
     assert cfg.bbox == CONUS
     assert cfg.min_zoom == 6
     assert cfg.max_zoom == 8
     assert cfg.product_id == "composite"
+    assert cfg.r2.upload_timeout_seconds == 900
 
 
 def test_load_config_product_rala_ignores_leftover_composite_url(monkeypatch):

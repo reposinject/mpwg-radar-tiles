@@ -16,8 +16,11 @@ ExecStart=/bin/bash -c 'unset MRMS_LATEST_URL MRMS_S3_PREFIX; exec /opt/mpwg-rad
 Nice=10
 IOSchedulingClass=best-effort
 IOSchedulingPriority=6
+# Same 1800s as the composite unit: a CONUS RALA oneshot is ~230s of upload
+# for ~866 objects, and MPWG_UPLOAD_TIMEOUT allows up to 900s. 300s killed
+# the cook before R2 finished.
 MemoryMax=1536M
-TimeoutStartSec=300
+TimeoutStartSec=1800
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=mpwg-radar-rala

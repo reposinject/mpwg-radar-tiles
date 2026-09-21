@@ -77,6 +77,7 @@ def cook(
             apply_dbz_floor=product.apply_dbz_floor,
             apply_despeckle=product.apply_despeckle,
             edge_aware=product.edge_aware_smooth,
+            apply_grid_smooth=product.apply_grid_smooth,
         )
         summary = _write_mode(cfg, palette, cooked, mode, radar_root, product)
         mode_summaries.append(summary)
@@ -191,8 +192,12 @@ def _write_mode(
             "despeckle": MODES[mode].despeckle and product.apply_despeckle,
             "smooth": MODES[mode].smooth,
             "smooth_kind": (
-                "edge-aware" if product.edge_aware_smooth and MODES[mode].smooth else "mild-3x3"
-                if MODES[mode].smooth
+                "masked-splat"
+                if product.sample_mode == "masked-splat"
+                else "edge-aware"
+                if product.edge_aware_smooth and MODES[mode].smooth and product.apply_grid_smooth
+                else "mild-3x3"
+                if MODES[mode].smooth and product.apply_grid_smooth
                 else "none"
             ),
             "sample": product.sample_mode,

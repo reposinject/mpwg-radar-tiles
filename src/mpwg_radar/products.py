@@ -39,6 +39,9 @@ DEFAULT_PRODUCT_ID = "composite"
 # among valid neighbors, so clear air never inherits echo color.
 SAMPLE_NEAREST = "nearest"
 SAMPLE_MASKED_BILINEAR = "masked-bilinear"
+# Contour drawn inside the echo mask. Clear-air cells stay empty; the visible
+# edge is a smoothed iso-line, not the square MRMS cell.
+SAMPLE_MASKED_SPLAT = "masked-splat"
 
 # Physical-grid categories, kept through QC and into colorize.
 # 0 is missing so an uninitialized mask cannot render as green.
@@ -73,6 +76,9 @@ class ProductSpec:
     sample_mode: str = SAMPLE_NEAREST
     # RALA: bilateral smooth inside the echo mask (cores stay, clear air stays empty).
     edge_aware_smooth: bool = False
+    # When false, Clean's 3×3 / bilateral grid smooth is skipped. RALA smooths
+    # at sample time so the contour is sub-cell, not another square grid.
+    apply_grid_smooth: bool = True
     attribution: str = "NOAA MRMS"
 
     @property
@@ -141,17 +147,18 @@ RALA = ProductSpec(
     quality_controlled=True,
     apply_dbz_floor=False,
     apply_despeckle=False,
-    sample_mode=SAMPLE_MASKED_BILINEAR,
-    edge_aware_smooth=True,
+    sample_mode=SAMPLE_MASKED_SPLAT,
+    edge_aware_smooth=False,
+    apply_grid_smooth=False,
     min_dbz_override=None,
     description=(
         "Operational MRMS Reflectivity at Lowest Altitude (NSSL param 57). "
         "Closest public NOAA dBZ field to RadarScope Typed RALA; typing itself "
         "is PrecipFlag (not ingested this pass). Not "
         "MergedReflectivityAtLowestAltitude, which NSSL labels non-QC. "
-        "No 10/15/20 dBZ blanking. Edge-aware smooth and masked bilinear "
-        "run only inside echo; clear-air cells stay empty. Weak returns use "
-        "a partial-alpha green ramp."
+        "No 10/15/20 dBZ blanking. Tiles are a mask-clipped contour: clear-air "
+        "cells stay empty, and the outline is drawn inside the echo so the "
+        "0.01° squares are not the edge. Weak returns stay, as dark-green wisps."
     ),
     attribution="NOAA MRMS ReflectivityAtLowestAltitude",
 )

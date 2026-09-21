@@ -18,6 +18,7 @@ from mpwg_radar.products import (
     CAT_NO_ECHO,
     CAT_VALID,
     SAMPLE_MASKED_BILINEAR,
+    SAMPLE_MASKED_SPLAT,
     SAMPLE_NEAREST,
 )
 
@@ -184,6 +185,128 @@ def sample_masked_bilinear(
     return out_dbz, out_cat, edge_scale
 
 
+# Occupancy blur in MRMS-cell units. The visible outline is an iso-line of
+# this blur, drawn inside the echo mask. A half-plane edge sits near 0.5, so
+# alpha starts just above that and the square cell boundary is not the edge
+# you see. Clear air is never painted.
+_OCC_SIGMA = 1.55
+_OCC_LO = np.float32(0.545)
+_OCC_HI = np.float32(0.64)
+# Narrow disc for a one-cell return. Used only where occupancy is low
+# (isolated or very thin echo). On a multi-cell storm it stays off, so it
+# cannot redraw the staircase the occupancy contour just removed.
+_DISC_SIGMA = 0.46
+_DISC_LO = np.float32(0.82)
+_DISC_HI = np.float32(0.97)
+_DISC_KEEP_LO = np.float32(0.22)
+_DISC_KEEP_HI = np.float32(0.50)
+# Color is a wide blend so neighboring cells grade. A core is restored only
+# when the nearest cell is hotter than that blend, so a 65 dBZ peak stays
+# magenta and ordinary cells do not snap back to flat squares.
+_COLOR_SIGMA = 1.35
+_PEAK_SIGMA = 0.38
+_PEAK_MIX = np.float32(0.80)
+_CORE_RISE = np.float32(8.0)
+_SPLAT_RADIUS = 4
+
+
+def sample_masked_splat(
+    dbz: np.ndarray,
+    lat: np.ndarray,
+    lon: np.ndarray,
+    qlat: np.ndarray,
+    qlon: np.ndarray,
+    category: Optional[np.ndarray] = None,
+    radius: int = _SPLAT_RADIUS,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Contour echo inside the mask. Never paint clear air.
+
+    The nearest source cell is the footprint. A query whose nearest cell is
+    no-echo or missing stays empty, even if the smoothed outline would have
+    reached it. Inside echo, alpha follows a blurred occupancy field, so a
+    staircase of MRMS cells becomes one inset contour. A lone valid cell is
+    kept as a soft disc. dBZ is a Gaussian blend of nearby echo cells, with
+    hot cores pulled back toward the peak cell.
+    """
+    src = np.asarray(dbz)
+    qlat_a = np.asarray(qlat)
+    qlon_a = np.asarray(qlon)
+    if category is None:
+        cat = np.where(np.isfinite(src), CAT_VALID, CAT_NO_ECHO).astype(np.uint8)
+    else:
+        cat = np.asarray(category)
+        if cat.shape != src.shape:
+            raise ValueError("category shape must match dbz")
+    out_dbz = np.full(qlat_a.shape, np.nan, dtype=np.float32)
+    out_cat = np.full(qlat_a.shape, CAT_MISSING, dtype=np.uint8)
+    edge_scale = np.zeros(qlat_a.shape, dtype=np.float32)
+    frac = _grid_fractional(lat, lon, qlat_a, qlon_a)
+    if frac is None or src.size == 0:
+        return out_dbz, out_cat, edge_scale
+    j_f, i_f = frac
+    j_n, i_n, in_grid = _nearest_indexers(lat, lon, qlat_a, qlon_a)
+    if not np.any(in_grid):
+        return out_dbz, out_cat, edge_scale
+    out_cat[in_grid] = cat[j_n[in_grid], i_n[in_grid]]
+    echo = in_grid & (out_cat == CAT_VALID)
+    if not np.any(echo):
+        return out_dbz, out_cat, edge_scale
+
+    ny, nx = src.shape
+    inv_occ = np.float32(1.0 / (2.0 * _OCC_SIGMA * _OCC_SIGMA))
+    inv_disc = np.float32(1.0 / (2.0 * _DISC_SIGMA * _DISC_SIGMA))
+    inv_color = np.float32(1.0 / (2.0 * _COLOR_SIGMA * _COLOR_SIGMA))
+    inv_peak = np.float32(1.0 / (2.0 * _PEAK_SIGMA * _PEAK_SIGMA))
+    mass_echo = np.zeros(qlat_a.shape, dtype=np.float32)
+    mass_all = np.zeros(qlat_a.shape, dtype=np.float32)
+    disc_mass = np.zeros(qlat_a.shape, dtype=np.float32)
+    num = np.zeros(qlat_a.shape, dtype=np.float32)
+    den = np.zeros(qlat_a.shape, dtype=np.float32)
+    for dy in range(-radius, radius + 1):
+        for dx in range(-radius, radius + 1):
+            jj = j_n + dy
+            ii = i_n + dx
+            inside = (jj >= 0) & (jj < ny) & (ii >= 0) & (ii < nx)
+            jc = np.clip(jj, 0, ny - 1)
+            ic = np.clip(ii, 0, nx - 1)
+            dj = (j_f - jj).astype(np.float32)
+            di = (i_f - ii).astype(np.float32)
+            d2 = dj * dj + di * di
+            wo = np.exp(-d2 * inv_occ).astype(np.float32)
+            wd = np.exp(-d2 * inv_disc).astype(np.float32)
+            wc = np.exp(-d2 * inv_color).astype(np.float32)
+            # Kernel taps past the grid count as clear air, so the mosaic
+            # edge does not brighten just because the window is truncated.
+            mass_all += wo
+            vals = src[jc, ic]
+            good = inside & (cat[jc, ic] == CAT_VALID) & np.isfinite(vals)
+            mass_echo += np.where(good, wo, np.float32(0.0))
+            disc_mass += np.where(good, wd, np.float32(0.0))
+            num += np.where(good, wc * vals.astype(np.float32), np.float32(0.0))
+            den += np.where(good, wc, np.float32(0.0))
+    occ = mass_echo / np.maximum(mass_all, np.float32(1e-6))
+    blob = np.clip((occ - _OCC_LO) / (_OCC_HI - _OCC_LO), 0.0, 1.0)
+    disc = np.clip((disc_mass - _DISC_LO) / (_DISC_HI - _DISC_LO), 0.0, 1.0)
+    disc_keep = np.clip(
+        (_DISC_KEEP_HI - occ) / (_DISC_KEEP_HI - _DISC_KEEP_LO), 0.0, 1.0
+    )
+    edge_scale[echo] = np.maximum(blob, disc * disc_keep)[echo].astype(np.float32)
+
+    use = echo & (den > 1e-6)
+    color = np.zeros(qlat_a.shape, dtype=np.float32)
+    color[use] = num[use] / den[use]
+    own_d2 = (j_f - j_n).astype(np.float32) ** 2 + (i_f - i_n).astype(np.float32) ** 2
+    own = np.exp(-own_d2 * inv_peak).astype(np.float32)
+    jc = np.clip(j_n, 0, ny - 1)
+    ic = np.clip(i_n, 0, nx - 1)
+    nearest_val = src[jc, ic].astype(np.float32)
+    hotter = np.clip((nearest_val - color) / _CORE_RISE, 0.0, 1.0)
+    mix = _PEAK_MIX * own * hotter
+    pulled = color * (1.0 - mix) + nearest_val * mix
+    out_dbz[use] = pulled[use].astype(np.float32)
+    return out_dbz, out_cat, edge_scale
+
+
 def _query_lonlat(z: int, x: int, y: int, tile_size: int):
     xs, ys = tile_pixel_centers(z, x, y, tile_size)
     gx = np.array(xs, dtype=np.float64)
@@ -207,17 +330,23 @@ def render_tile(
     """Return (PNG image, has_echo).
 
     ``nearest`` (composite) copies one MRMS cell into every pixel of that
-    cell. ``masked-bilinear`` (RALA) keeps the same nearest-cell footprint
-    and only interpolates dBZ inside echo, so the grid steps inside a storm
-    soften without a halo in clear air.
+    cell. ``masked-splat`` (RALA) and ``masked-bilinear`` keep that nearest
+    cell as the footprint and only blend inside echo, so a clear-air neighbor
+    stays empty. Splat draws a smooth contour inset from the square cell
+    edge; a lone echo cell stays a soft disc.
     """
     qlon, qlat = _query_lonlat(z, x, y, tile_size)
-    if sample_mode == SAMPLE_MASKED_BILINEAR:
-        sampled, sampled_cat, edge_scale = sample_masked_bilinear(
+    if sample_mode in (SAMPLE_MASKED_BILINEAR, SAMPLE_MASKED_SPLAT):
+        sampler = (
+            sample_masked_splat
+            if sample_mode == SAMPLE_MASKED_SPLAT
+            else sample_masked_bilinear
+        )
+        sampled, sampled_cat, edge_scale = sampler(
             frame.dbz, frame.lat, frame.lon, qlat, qlon, frame.category
         )
         rgba = palette.colorize(sampled, category=sampled_cat)
-        # Palette alpha (wispy low dBZ) times an in-mask edge fade. Clear-air
+        # Palette alpha (wispy low dBZ) times the in-mask stamp. Clear-air
         # queries have edge_scale 0, so they cannot pick up a neighbor's color.
         faded = rgba[..., 3].astype(np.float32) * edge_scale
         rgba[..., 3] = np.clip(np.rint(faded), 0, 255).astype(np.uint8)
@@ -241,7 +370,7 @@ def render_tile(
     else:
         raise ValueError(
             f"Unknown sample_mode {sample_mode!r}. "
-            f"Use {SAMPLE_NEAREST!r} or {SAMPLE_MASKED_BILINEAR!r}."
+            f"Use {SAMPLE_NEAREST!r}, {SAMPLE_MASKED_BILINEAR!r}, or {SAMPLE_MASKED_SPLAT!r}."
         )
     has_echo = bool(np.any(rgba[..., 3] > 0))
     return Image.fromarray(rgba), has_echo

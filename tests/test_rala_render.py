@@ -11,7 +11,7 @@ from mpwg_radar.grib import ReflectivityFrame
 from mpwg_radar.palette import load_palette
 from mpwg_radar.products import CAT_NO_ECHO, CAT_VALID, RALA
 from mpwg_radar.qc import apply_mode, edge_aware_smooth, mild_smooth
-from mpwg_radar.tiles import render_tile, sample_masked_bilinear
+from mpwg_radar.tiles import render_tile, sample_masked_bilinear, sample_masked_splat
 
 
 def _frame(dbz, lat, lon, category):
@@ -104,6 +104,7 @@ def test_isolated_weak_cell_survives_rala_clean_and_paints():
         apply_dbz_floor=RALA.apply_dbz_floor,
         apply_despeckle=RALA.apply_despeckle,
         edge_aware=RALA.edge_aware_smooth,
+        apply_grid_smooth=RALA.apply_grid_smooth,
     )
     assert kept.category[4, 4] == CAT_VALID
     assert abs(float(kept.dbz[4, 4]) - (-5.0)) < 1e-3
@@ -122,6 +123,81 @@ def test_isolated_weak_cell_survives_rala_clean_and_paints():
     assert not (r < 90 and g > 140 and b > 140)
     anchor15 = pal.colorize(np.array([[15.0]], dtype=np.float32))[0, 0]
     assert not np.array_equal(rgba[4, 4], anchor15)
+
+
+def test_splat_rounds_squares_without_painting_clear_air():
+    lat = np.array([30.00, 29.99], dtype=np.float64)
+    lon = np.array([-98.00, -97.99], dtype=np.float64)
+    dbz = np.array([[62.0, np.nan], [np.nan, np.nan]], dtype=np.float32)
+    cat = np.full(dbz.shape, CAT_NO_ECHO, dtype=np.uint8)
+    cat[0, 0] = CAT_VALID
+    qlat = np.array([[30.00]], dtype=np.float64)
+
+    center, center_cat, center_s = sample_masked_splat(
+        dbz, lat, lon, qlat, np.array([[-98.00]]), cat
+    )
+    assert center_cat[0, 0] == CAT_VALID
+    assert abs(float(center[0, 0]) - 62.0) < 1.0
+    assert float(center_s[0, 0]) > 0.9
+
+    # Voronoi corner of the echo cell: still the echo cell, but not a square.
+    corner_lon = -98.00 + 0.0049
+    corner_lat = 30.00 - 0.0049
+    corner, corner_cat, corner_s = sample_masked_splat(
+        dbz, lat, lon, np.array([[corner_lat]]), np.array([[corner_lon]]), cat
+    )
+    assert corner_cat[0, 0] == CAT_VALID
+    assert float(corner_s[0, 0]) < 0.35
+
+    clear, clear_cat, clear_s = sample_masked_splat(
+        dbz, lat, lon, qlat, np.array([[-98.00 + 0.006]]), cat
+    )
+    assert clear_cat[0, 0] == CAT_NO_ECHO
+    assert np.isnan(clear[0, 0])
+    assert float(clear_s[0, 0]) == 0.0
+
+
+def test_splat_contour_hides_the_square_edge_and_keeps_a_hot_core():
+    """A filled region's voronoi edge is transparent. The core stays hot."""
+    lat = np.arange(30.20, 29.80, -0.01, dtype=np.float64)
+    lon = np.arange(-98.20, -97.80, 0.01, dtype=np.float64)
+    dbz = np.full((lat.size, lon.size), 42.0, dtype=np.float32)
+    # Southern half is clear air, so the boundary is a long straight stair.
+    split = lat.size // 2
+    dbz[split:] = np.nan
+    cat = np.full(dbz.shape, CAT_NO_ECHO, dtype=np.uint8)
+    cat[np.isfinite(dbz)] = CAT_VALID
+    edge_row = split - 1
+    edge_lat = float(lat[edge_row])
+    # Just inside the echo cell, against the clear neighbor: not a square rim.
+    rim_lat = edge_lat - 0.0049
+    rim, rim_cat, rim_s = sample_masked_splat(
+        dbz, lat, lon, np.array([[rim_lat]]), np.array([[float(lon[lon.size // 2])]]), cat
+    )
+    assert rim_cat[0, 0] == CAT_VALID
+    assert float(rim_s[0, 0]) < 0.2
+    # Deeper in that same edge cell the contour is already solid.
+    inner, inner_cat, inner_s = sample_masked_splat(
+        dbz, lat, lon, np.array([[edge_lat + 0.002]]), np.array([[float(lon[lon.size // 2])]]), cat
+    )
+    assert inner_cat[0, 0] == CAT_VALID
+    assert float(inner_s[0, 0]) > 0.85
+    # The clear-air neighbor stays empty.
+    clear_lat = edge_lat - 0.006
+    clear, clear_cat, clear_s = sample_masked_splat(
+        dbz, lat, lon, np.array([[clear_lat]]), np.array([[float(lon[lon.size // 2])]]), cat
+    )
+    assert clear_cat[0, 0] == CAT_NO_ECHO
+    assert np.isnan(clear[0, 0])
+    assert float(clear_s[0, 0]) == 0.0
+
+    # 68 dBZ core in 42 dBZ rain stays in the magenta range, not averaged to ~50.
+    dbz[8, 8] = 68.0
+    core, core_cat, _core_s = sample_masked_splat(
+        dbz, lat, lon, np.array([[float(lat[8])]]), np.array([[float(lon[8])]]), cat
+    )
+    assert core_cat[0, 0] == CAT_VALID
+    assert float(core[0, 0]) >= 60.0
 
 
 def test_edge_aware_smooth_keeps_cores_and_clear_air():
@@ -176,7 +252,7 @@ def test_rala_tile_footprint_matches_nearest_and_interior_is_smoother():
     pal = load_palette(RALA.palette_id)
 
     nearest, _ = render_tile(frame, pal, z, x, y, sample_mode="nearest")
-    smooth, _ = render_tile(frame, pal, z, x, y, sample_mode="masked-bilinear")
+    smooth, _ = render_tile(frame, pal, z, x, y, sample_mode="masked-splat")
     default, _ = render_tile(frame, pal, z, x, y)
     near_px = np.array(nearest)
     smooth_px = np.array(smooth)

@@ -111,53 +111,45 @@ def test_colorbar_starts_at_display_cutoff():
 
 
 def test_rala_recording_ramp_is_continuous_and_not_olive():
-    """Side-by-side notes: brighter greens, wider orange, magenta cores, wispy lows."""
+    """Johnson City still: dark-green low end, neon mid-green, magenta cores."""
     pal = load_palette("mpwg-rala-2026-09")
     assert pal.min_dbz == -32.0
-    # James hexes that still match the recording, at the dBZ where RALA uses them.
-    assert _rgba(pal, 20.0) == (15, 163, 61, 255)  # #0FA33D
-    assert _rgba(pal, 25.0) == (50, 201, 75, 255)  # #32C94B
-    assert _rgba(pal, 30.0) == (244, 242, 13, 255)  # #F4F20D
-    assert _rgba(pal, 44.0) == (245, 138, 22, 255)  # #F58A16
-    assert _rgba(pal, 60.0) == (229, 42, 174, 255)  # #E52AAE magenta, not dark red
-    assert _rgba(pal, 65.0) == (181, 42, 203, 255)
-    assert _rgba(pal, 70.0) == (120, 40, 200, 255)
-    assert _rgba(pal, 75.0) == (217, 182, 255, 255)
-    # 15 is brighter than the olive Clean anchor #08772E (8, 119, 46).
-    r15, g15, b15, a15 = _rgba(pal, 15.0)
-    assert g15 > 119 and a15 >= 220
-    assert (r15, g15, b15) != (8, 119, 46)
-    # Neon lift between James green and yellow, still green (not yellow yet).
-    r28, g28, b28, a28 = _rgba(pal, 28.0)
-    assert a28 == 255 and g28 > 220 and r28 < 180 and g28 > r28
-    # 31 dBZ is between yellow (30) and gold (34), not a 5 dBZ bucket.
-    y30 = np.array(_rgba(pal, 30.0), dtype=np.float64)
-    gold = np.array(_rgba(pal, 34.0), dtype=np.float64)
-    expected = np.clip(y30 + 0.25 * (gold - y30), 0, 255)
+    assert _rgba(pal, 36.0) == (244, 242, 13, 255)  # James yellow, after the greens
+    assert _rgba(pal, 44.0) == (245, 138, 22, 255)  # James orange
+    assert _rgba(pal, 60.0) == (229, 42, 174, 255)  # James magenta
+    # Neon green before yellow, not an olive block.
+    r30, g30, b30, a30 = _rgba(pal, 30.0)
+    assert a30 == 255 and g30 > 220 and g30 > r30 and b30 < 140
+    # Low end is dark green and only partly opaque — visible, not a bright square.
+    r5, g5, b5, a5 = _rgba(pal, 5.0)
+    assert g5 > r5 and g5 > b5 and r5 < 80
+    assert 140 < a5 < 230
+    # 31 dBZ sits between neon green and yellow-green, not a 5 dBZ bucket.
+    c30 = np.array(_rgba(pal, 30.0), dtype=np.float64)
+    c33 = np.array(_rgba(pal, 33.0), dtype=np.float64)
+    expected = np.clip(c30 + (1.0 / 3.0) * (c33 - c30), 0, 255)
     got = np.array(_rgba(pal, 31.0), dtype=np.float64)
     np.testing.assert_allclose(got, expected, atol=1.5)
-    assert got[0] > 200 and got[1] > 180 and got[2] < 40
-    # Orange occupies a wide span; 46 dBZ is still orange, not red.
-    for dbz in (36.0, 42.0, 47.0):
+    assert tuple(int(c) for c in got) not in {tuple(int(c) for c in c30), tuple(int(c) for c in c33)}
+    # Orange is distinct from yellow and from red.
+    for dbz in (40.0, 44.0, 48.0):
         r, g, b, a = _rgba(pal, dbz)
-        assert a == 255 and r > 220 and 60 < g < 210 and b < 50, (dbz, r, g, b)
-    red_r, red_g, red_b, _ = _rgba(pal, 57.0)
-    assert red_r > 200 and red_g < 50 and red_b < 50
-    # 60+ is magenta/purple, not the dark-red plateau.
-    for dbz in (60.0, 62.0, 68.0):
+        assert a == 255 and r > 200 and 50 < g < 210 and b < 80, (dbz, r, g, b)
+    red_r, red_g, red_b, _ = _rgba(pal, 53.0)
+    assert red_r > 180 and red_g < 70 and red_b < 60
+    for dbz in (60.0, 64.0, 70.0):
         r, g, b, a = _rgba(pal, dbz)
-        assert a == 255 and r > 140 and b > 140 and g < 120, (dbz, r, g, b)
-    # Weak valid returns fade in alpha instead of a hard cutoff or a dark block.
+        assert a == 255 and r > 180 and b > 150 and g < 180, (dbz, r, g, b)
     a_lo = _rgba(pal, -32.0)[3]
     a0 = _rgba(pal, 0.0)[3]
-    a8 = _rgba(pal, 8.0)[3]
-    assert 0 < a_lo < a0 < a8 < 255
+    a12 = _rgba(pal, 12.0)[3]
+    assert 0 < a_lo < a0 < a12 < 255
+    assert _rgba(pal, 23.0)[3] == 255
     assert _rgba(pal, -32.1) == (0, 0, 0, 0)
-    # Continuous, not nearest-step: 21 dBZ is not identical to 20 or 25.
+    c18 = _rgba(pal, 18.0)
     c20 = _rgba(pal, 20.0)
-    c21 = _rgba(pal, 21.0)
-    c25 = _rgba(pal, 25.0)
-    assert c21 != c20 and c21 != c25
+    c23 = _rgba(pal, 23.0)
+    assert c20 != c18 and c20 != c23
 
 
 def test_rala_ramp_has_no_cyan_and_low_end_is_a_wisp():
@@ -166,7 +158,6 @@ def test_rala_ramp_has_no_cyan_and_low_end_is_a_wisp():
         r, g, b, a = _rgba(pal, float(dbz))
         assert a > 0
         assert not (r < 90 and g > 140 and b > 140), (dbz, r, g, b)
-    # Very light rain reads as green, not near-black, and is not fully opaque.
     r, g, b, a = _rgba(pal, -5.0)
-    assert a < 200
-    assert g > 180 and g > r and g > b
+    assert 100 < a < 220
+    assert g > r and g > b and g < 140

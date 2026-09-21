@@ -206,6 +206,7 @@ def _cmd_decode(args) -> int:
         apply_dbz_floor=spec.apply_dbz_floor,
         apply_despeckle=spec.apply_despeckle,
         edge_aware=spec.edge_aware_smooth,
+        apply_grid_smooth=spec.apply_grid_smooth,
     )
     import numpy as np
 

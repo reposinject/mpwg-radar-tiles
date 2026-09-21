@@ -75,6 +75,7 @@ def apply_mode(
     apply_dbz_floor: bool = True,
     apply_despeckle: bool = True,
     edge_aware: bool = False,
+    apply_grid_smooth: bool = True,
 ) -> ReflectivityFrame:
     spec = MODES[mode]
     if frame.category is None:
@@ -88,9 +89,9 @@ def apply_mode(
     if spec.despeckle and apply_despeckle:
         dbz, cat = remove_small_components(dbz, spec.min_component, category=cat)
         dbz, cat = despike_isolated(dbz, category=cat)
-    if spec.smooth and edge_aware:
+    if spec.smooth and apply_grid_smooth and edge_aware:
         dbz = edge_aware_smooth(dbz)
-    elif spec.smooth:
+    elif spec.smooth and apply_grid_smooth:
         dbz = mild_smooth(dbz)
         if apply_dbz_floor:
             dbz, cat = threshold(dbz, cutoff, category=cat)

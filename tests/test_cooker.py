@@ -239,8 +239,8 @@ def test_rala_cook_writes_prefixed_tiles_and_keeps_composite(tmp_path: Path):
         (tmp_path / "radar" / "rala" / "clean" / "latest" / "frame.json").read_text()
     )
     assert rala_frame["mode_spec"]["despeckle"] is False
-    assert rala_frame["mode_spec"]["sample"] == "masked-bilinear"
-    assert rala_frame["mode_spec"]["smooth_kind"] == "edge-aware"
+    assert rala_frame["mode_spec"]["sample"] == "masked-splat"
+    assert rala_frame["mode_spec"]["smooth_kind"] == "masked-splat"
     assert rala_frame["valid_time"].endswith("+00:00")
     comp_frame = json.loads(
         (tmp_path / "radar" / "clean" / "latest" / "frame.json").read_text()

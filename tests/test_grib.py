@@ -123,3 +123,22 @@ def test_mask_fill_sentinels():
     out = mask_fill(arr)
     assert np.isnan(out[0, 0]) and np.isnan(out[0, 1])
     assert out[0, 2] == 12.0
+
+
+def test_decode_png_grib_classifies_sentinels(tmp_path: Path):
+    grid = np.full((8, 10), -999.0, dtype=np.float32)
+    grid[1:4, 1:5] = -99.0
+    grid[2, 2] = 5.0
+    grid[2, 3] = 41.0
+    blob = build_png_grib2(grid, lat_first=31.0, lon_first=-98.0)
+    path = tmp_path / "sentinels.grib2"
+    path.write_bytes(blob)
+    frame = decode_grib2(path, product="ReflectivityAtLowestAltitude")
+    from mpwg_radar.products import CAT_MISSING, CAT_NO_ECHO, CAT_VALID
+
+    assert frame.product == "ReflectivityAtLowestAltitude"
+    assert frame.category[0, 0] == CAT_MISSING
+    assert frame.category[1, 1] == CAT_NO_ECHO
+    assert frame.category[2, 2] == CAT_VALID
+    assert abs(float(frame.dbz[2, 2]) - 5.0) < 0.15
+    assert np.isnan(frame.dbz[0, 0]) and np.isnan(frame.dbz[1, 1])

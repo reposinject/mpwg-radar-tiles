@@ -15,6 +15,7 @@ from mpwg_radar.cooker import cook
 from mpwg_radar.grib import decode_grib2
 from mpwg_radar.geo import CENTRAL_TEXAS, REGIONS
 from mpwg_radar.preview import write_preview
+from mpwg_radar.products import COOKABLE_PRODUCT_IDS, DEFAULT_PRODUCT_ID
 from mpwg_radar.qc import apply_mode
 from mpwg_radar.synthetic import synthetic_central_texas
 
@@ -43,6 +44,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     cook_p.add_argument("--no-upload", action="store_true")
     cook_p.add_argument("--upload", action="store_true", help="Upload even if MPWG_UPLOAD=false")
     cook_p.add_argument("--keep-empty", action="store_true", help="Write fully transparent tiles")
+    cook_p.add_argument(
+        "--product",
+        choices=COOKABLE_PRODUCT_IDS,
+        default=None,
+        help="MRMS product id: composite (production default) or rala",
+    )
 
     smoke_p = sub.add_parser(
         "smoke",
@@ -51,6 +58,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     smoke_p.add_argument("--live", action="store_true", help="Download latest NOAA MRMS")
     smoke_p.add_argument("--out", type=Path, default=Path("./output/smoke"))
     smoke_p.add_argument("--max-zoom", type=int, default=8)
+    smoke_p.add_argument(
+        "--product",
+        choices=COOKABLE_PRODUCT_IDS,
+        default=DEFAULT_PRODUCT_ID,
+        help="Product to smoke (default composite; rala uses the RALA palette)",
+    )
 
     dec_p = sub.add_parser("decode", help="Print GRIB2 crop stats (debug)")
     dec_p.add_argument("grib", type=Path)
@@ -98,6 +111,8 @@ def _cmd_cook(args) -> int:
         overrides["data_dir"] = args.out / "data"
     if args.keep_empty:
         overrides["skip_empty_tiles"] = False
+    if args.product:
+        overrides["product_id"] = args.product
     cfg = load_config(overrides)
     upload = False if args.no_upload else (True if args.upload else None)
     result = cook(cfg, source=args.source, grib_path=args.grib, upload=upload)
@@ -120,6 +135,7 @@ def _cmd_smoke(args) -> int:
         # Smoke stays on the small Central Texas crop so it is fast locally.
         "region_name": "central-texas",
         "bbox": CENTRAL_TEXAS,
+        "product_id": args.product,
     }
     cfg = load_config(overrides)
     source = "mrms" if args.live else "synthetic"
@@ -136,9 +152,12 @@ def _cmd_smoke(args) -> int:
             raise
     preview = write_preview(out / "radar", cfg)
     result["preview"] = str(preview)
-    _assert_smoke_tiles(out / "radar" / "clean")
+    from mpwg_radar.products import get_product
+
+    spec = get_product(cfg.product_id)
+    _assert_smoke_tiles(spec.mode_dir(out / "radar", "clean"))
     print(json.dumps(result, indent=2))
-    print(f"\nSmoke tiles: {out / 'radar' / 'clean'}")
+    print(f"\nSmoke tiles: {spec.mode_dir(out / 'radar', 'clean')}")
     print(f"Preview:     {preview}")
     print("Open preview.html in a browser (or: python -m http.server --directory output/smoke).")
     return 0
@@ -178,7 +197,7 @@ def _assert_smoke_tiles(mode_root: Path) -> None:
 
 def _cmd_decode(args) -> int:
     cfg = load_config()
-    frame = decode_grib2(args.grib, bbox=cfg.bbox)
+    frame = decode_grib2(args.grib, bbox=cfg.bbox, product=cfg.product.mrms_name)
     cleaned = apply_mode(frame, "clean")
     import numpy as np
 

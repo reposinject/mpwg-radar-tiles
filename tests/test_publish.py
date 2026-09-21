@@ -54,6 +54,27 @@ def test_classify_skips_retained_frames(tmp_path: Path):
     assert skipped == 2
 
 
+def test_classify_skips_other_product_tree(tmp_path: Path):
+    radar = tmp_path / "radar"
+    _radar_tree(radar)
+    _touch(radar / "rala" / "clean" / "20260915T163641Z" / "6" / "1" / "2.png")
+    _touch(radar / "rala" / "clean" / "latest" / "6" / "1" / "2.png")
+    groups, skipped = classify_radar_files(
+        radar, "20260915T163641Z", ["clean"], product_id="composite"
+    )
+    rels = [rel for items in groups.values() for _, rel in items]
+    assert all(not rel.startswith("rala/") for rel in rels)
+    assert skipped >= 4
+
+    rala_groups, _ = classify_radar_files(
+        radar, "20260915T163641Z", ["clean"], product_id="rala"
+    )
+    rala_rels = [rel for items in rala_groups.values() for _, rel in items]
+    assert "rala/clean/20260915T163641Z/6/1/2.png" in rala_rels
+    assert "rala/clean/latest/6/1/2.png" in rala_rels
+    assert all(not rel.startswith("clean/") for rel in rala_rels if rel != "manifest.json")
+
+
 class FakeClient:
     def __init__(self, put=None):
         self.puts = []

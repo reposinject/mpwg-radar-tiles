@@ -17,6 +17,8 @@ from typing import List, Optional, Tuple
 import numpy as np
 from PIL import Image
 
+from mpwg_radar.products import CAT_VALID
+
 RGBA = Tuple[int, int, int, int]
 
 
@@ -51,16 +53,25 @@ class Palette:
     def min_dbz(self) -> float:
         return float(self.display_min_dbz) if self.display_min_dbz is not None else 0.0
 
-    def colorize(self, dbz: np.ndarray) -> np.ndarray:
+    def colorize(
+        self, dbz: np.ndarray, category: Optional[np.ndarray] = None
+    ) -> np.ndarray:
         """Map a dBZ array to uint8 RGBA. Input is not modified.
 
-        NaNs and values below display_min_dbz stay transparent. Between
-        anchor stops, RGB is linearly interpolated against the actual dBZ
-        value (0.1 dBZ LUT); values are not quantized to 5 dBZ buckets.
+        Only CAT_VALID cells with finite dBZ at/above display_min_dbz get
+        color. NaNs, no-echo, and missing/no-coverage stay transparent and
+        are never treated as 0 dBZ. Between anchor stops, RGB is linearly
+        interpolated against the actual dBZ value (0.1 dBZ LUT); values are
+        not quantized to 5 dBZ buckets.
         """
         flat = np.asarray(dbz, dtype=np.float32)
         out = np.zeros(flat.shape + (4,), dtype=np.uint8)
         valid = np.isfinite(flat)
+        if category is not None:
+            cat = np.asarray(category)
+            if cat.shape != flat.shape:
+                raise ValueError("category shape must match dbz")
+            valid = valid & (cat == CAT_VALID)
         if not np.any(valid):
             return out
         safe = np.where(valid, flat, self._lut_dbz0)
@@ -71,6 +82,19 @@ class Palette:
         below = valid & (flat < self.min_dbz)
         out[below] = np.array(self.below_min, dtype=np.uint8)
         return out
+
+    def with_display_min(self, display_min_dbz: float) -> "Palette":
+        """Return a copy with a different display cutoff (LUT rebuilt)."""
+        return Palette(
+            id=self.id,
+            name=self.name,
+            stops=list(self.stops),
+            below_min=self.below_min,
+            author=self.author,
+            version=self.version,
+            description=self.description,
+            display_min_dbz=float(display_min_dbz),
+        )
 
     def colorbar(
         self,

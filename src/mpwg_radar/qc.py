@@ -1,25 +1,29 @@
 """QC / cleanup on the physical dBZ grid (before colorization).
 
-This is not the Clean display cutoff. Tiles hide reflectivity below 15 dBZ
-in the palette (display-only); the float32 dBZ crop is written before this
-module runs. Clean mode still drops sub-10 dBZ clutter from the *mode* grid
-used for despeckle/smooth.
+This is not the Clean display cutoff. Tiles hide reflectivity below the
+palette display_min (15 dBZ for composite Clean; ~0 for RALA valid returns).
+The float32 dBZ crop is written before this module runs.
+
+Composite Clean still drops sub-10 dBZ clutter from the *mode* grid used
+for despeckle/smooth. RALA disables that dBZ floor (James: no 10/15/20
+cutoff this pass); spatial despeckle/smooth still run.
 
 Modes
 -----
-clean     default: drop < ~10 dBZ clutter, despeckle, mild 3×3 smooth
+clean     default: composite drops < ~10 dBZ clutter, despeckle, mild 3×3
 standard  scaffold: hide < ~5 dBZ, no despeckle/smooth
-all       scaffold: hide fill only (still masks -99/-999 no-coverage)
+all       scaffold: hide fill only (still masks MRMS no-echo / no-coverage)
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict
+from typing import Dict, Optional
 
 import numpy as np
 
-from mpwg_radar.grib import ReflectivityFrame, mask_fill
+from mpwg_radar.grib import ReflectivityFrame, classify_dbz
+from mpwg_radar.products import CAT_NO_ECHO, CAT_VALID
 
 
 @dataclass(frozen=True)
@@ -60,16 +64,29 @@ MODES: Dict[str, ModeSpec] = {
 }
 
 
-def apply_mode(frame: ReflectivityFrame, mode: str) -> ReflectivityFrame:
+def apply_mode(
+    frame: ReflectivityFrame,
+    mode: str,
+    *,
+    min_dbz: Optional[float] = None,
+    apply_dbz_floor: bool = True,
+) -> ReflectivityFrame:
     spec = MODES[mode]
-    dbz = mask_fill(frame.dbz)
-    dbz = threshold(dbz, spec.min_dbz)
+    if frame.category is None:
+        dbz, cat = classify_dbz(frame.dbz)
+    else:
+        dbz = frame.dbz.astype(np.float32, copy=True)
+        cat = frame.category.copy()
+    cutoff = spec.min_dbz if min_dbz is None else min_dbz
+    if apply_dbz_floor:
+        dbz, cat = threshold(dbz, cutoff, category=cat)
     if spec.despeckle:
-        dbz = remove_small_components(dbz, spec.min_component)
-        dbz = despike_isolated(dbz)
+        dbz, cat = remove_small_components(dbz, spec.min_component, category=cat)
+        dbz, cat = despike_isolated(dbz, category=cat)
     if spec.smooth:
         dbz = mild_smooth(dbz)
-        dbz = threshold(dbz, spec.min_dbz)
+        if apply_dbz_floor:
+            dbz, cat = threshold(dbz, cutoff, category=cat)
     return ReflectivityFrame(
         dbz=dbz,
         lat=frame.lat,
@@ -77,31 +94,56 @@ def apply_mode(frame: ReflectivityFrame, mode: str) -> ReflectivityFrame:
         valid_time=frame.valid_time,
         product=frame.product,
         source=frame.source,
+        category=cat,
     )
 
 
-def threshold(dbz: np.ndarray, min_dbz: float) -> np.ndarray:
+def threshold(
+    dbz: np.ndarray,
+    min_dbz: float,
+    category: Optional[np.ndarray] = None,
+):
+    """Hide finite values below min_dbz as no-echo (not missing/no-coverage)."""
     out = dbz.astype(np.float32, copy=True)
-    out[np.isfinite(out) & (out < min_dbz)] = np.nan
-    return out
+    hide = np.isfinite(out) & (out < min_dbz)
+    out[hide] = np.nan
+    if category is None:
+        return out
+    cat = category.copy()
+    # Clutter/floor hides remain "had coverage" — do not promote to missing.
+    cat[hide & (cat == CAT_VALID)] = CAT_NO_ECHO
+    return out, cat
 
 
-def despike_isolated(dbz: np.ndarray) -> np.ndarray:
+def despike_isolated(
+    dbz: np.ndarray, category: Optional[np.ndarray] = None
+):
     """Drop echo pixels that have fewer than two echoing 8-neighbors."""
     valid = np.isfinite(dbz)
     if not np.any(valid):
-        return dbz
+        if category is None:
+            return dbz
+        return dbz, category
     neighbors = _neighbor_count(valid)
     keep = valid & (neighbors >= 2)
     out = dbz.copy()
-    out[~keep] = np.nan
-    return out
+    dropped = valid & ~keep
+    out[dropped] = np.nan
+    if category is None:
+        return out
+    cat = category.copy()
+    cat[dropped & (cat == CAT_VALID)] = CAT_NO_ECHO
+    return out, cat
 
 
-def remove_small_components(dbz: np.ndarray, min_size: int) -> np.ndarray:
+def remove_small_components(
+    dbz: np.ndarray, min_size: int, category: Optional[np.ndarray] = None
+):
     """Remove 4-connected echo regions smaller than min_size pixels."""
     if min_size <= 1:
-        return dbz
+        if category is None:
+            return dbz
+        return dbz, category
     valid = np.isfinite(dbz)
     h, w = valid.shape
     seen = np.zeros((h, w), dtype=np.uint8)
@@ -125,8 +167,13 @@ def remove_small_components(dbz: np.ndarray, min_size: int) -> np.ndarray:
                 for y, x in component:
                     keep[y, x] = True
     out = dbz.copy()
-    out[~keep] = np.nan
-    return out
+    dropped = valid & ~keep
+    out[dropped] = np.nan
+    if category is None:
+        return out
+    cat = category.copy()
+    cat[dropped & (cat == CAT_VALID)] = CAT_NO_ECHO
+    return out, cat
 
 
 def mild_smooth(dbz: np.ndarray) -> np.ndarray:

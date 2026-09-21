@@ -15,6 +15,12 @@ from mpwg_radar.geo import (
     BBox,
     parse_bbox,
 )
+from mpwg_radar.products import (
+    COOKABLE_PRODUCT_IDS,
+    DEFAULT_PRODUCT_ID,
+    ProductSpec,
+    get_product,
+)
 
 
 def _truthy(value: Optional[str], default: bool = False) -> bool:
@@ -93,7 +99,9 @@ class CookerConfig:
     output_dir: Path = Path("./output")
     retention_frames: int = 30
     log_level: str = "INFO"
-    # NOAA MRMS QC column-max mosaic (not RALA). See README "Product source".
+    product_id: str = DEFAULT_PRODUCT_ID
+    # NOAA MRMS endpoints. Defaults follow product_id; composite stays the
+    # production QC column-max mosaic. See products.py for RALA vs unQC sibling.
     mrms_latest_url: str = (
         "https://mrms.ncep.noaa.gov/2D/MergedReflectivityQCComposite/"
         "MRMS_MergedReflectivityQCComposite.latest.grib2.gz"
@@ -104,7 +112,12 @@ class CookerConfig:
     upload: bool = True
     r2: R2Config = field(default_factory=R2Config)
     palette_id: str = "mpwg-clean-2026-09"
+    display_min_dbz: Optional[float] = None
     user_agent: str = "mpwg-radar-tiles/1.0 (+https://github.com/reposinject/mpwg-radar-tiles)"
+
+    @property
+    def product(self) -> ProductSpec:
+        return get_product(self.product_id)
 
     def validate(self) -> None:
         if self.bbox.west >= self.bbox.east or self.bbox.south >= self.bbox.north:
@@ -120,6 +133,21 @@ class CookerConfig:
             raise ValueError(f"Unknown modes: {unknown}")
         if not self.modes:
             raise ValueError("At least one mode is required")
+        if self.product_id not in COOKABLE_PRODUCT_IDS:
+            raise ValueError(
+                f"Unknown product {self.product_id!r}. Cookable: {list(COOKABLE_PRODUCT_IDS)}"
+            )
+
+    def __post_init__(self) -> None:
+        if self.product_id == DEFAULT_PRODUCT_ID:
+            return
+        spec = get_product(self.product_id)
+        if "MergedReflectivityQCComposite" in self.mrms_latest_url:
+            self.mrms_latest_url = spec.ncep_latest_url
+        if "MergedReflectivityQCComposite" in self.mrms_s3_prefix:
+            self.mrms_s3_prefix = spec.s3_prefix
+        if self.palette_id == "mpwg-clean-2026-09":
+            self.palette_id = spec.palette_id
 
 
 def load_dotenv(path: Optional[Path] = None) -> None:
@@ -144,6 +172,24 @@ def load_config(overrides: Optional[dict] = None) -> CookerConfig:
         _first_env("MPWG_REGION", "REGION", default="conus"),
         _first_env("MPWG_BBOX", "BBOX", default=""),
     )
+    product_id = _first_env("MPWG_PRODUCT", default=DEFAULT_PRODUCT_ID).strip().lower()
+    product = get_product(product_id)
+    palette_id = os.environ.get("MPWG_PALETTE") or product.palette_id
+    display_min_raw = os.environ.get("MPWG_DISPLAY_MIN_DBZ")
+    display_min = float(display_min_raw) if display_min_raw else None
+    # Product catalog supplies endpoints. MRMS_LATEST_URL is a composite-era
+    # override: honor it for composite so existing /etc/mpwg-radar.env keeps
+    # working; ignore a leftover composite URL when cooking rala.
+    mrms_url = os.environ.get("MRMS_LATEST_URL", "").strip()
+    mrms_prefix = os.environ.get("MRMS_S3_PREFIX", "").strip()
+    if product_id != DEFAULT_PRODUCT_ID:
+        if (not mrms_url) or ("MergedReflectivityQCComposite" in mrms_url):
+            mrms_url = product.ncep_latest_url
+        if (not mrms_prefix) or ("MergedReflectivityQCComposite" in mrms_prefix):
+            mrms_prefix = product.s3_prefix
+    else:
+        mrms_url = mrms_url or product.ncep_latest_url
+        mrms_prefix = mrms_prefix or product.s3_prefix
     cfg = CookerConfig(
         region_name=region_name,
         bbox=bbox,
@@ -157,14 +203,10 @@ def load_config(overrides: Optional[dict] = None) -> CookerConfig:
         output_dir=Path(os.environ.get("MPWG_OUTPUT_DIR", "./output")),
         retention_frames=int(os.environ.get("MPWG_RETENTION_FRAMES", "30")),
         log_level=os.environ.get("MPWG_LOG_LEVEL", "INFO").upper(),
-        mrms_latest_url=os.environ.get(
-            "MRMS_LATEST_URL",
-            CookerConfig.mrms_latest_url,
-        ),
+        product_id=product_id,
+        mrms_latest_url=mrms_url,
         mrms_s3_bucket=os.environ.get("MRMS_S3_BUCKET", "noaa-mrms-pds"),
-        mrms_s3_prefix=os.environ.get(
-            "MRMS_S3_PREFIX", "CONUS/MergedReflectivityQCComposite_00.50"
-        ),
+        mrms_s3_prefix=mrms_prefix,
         mrms_timeout_seconds=int(os.environ.get("MRMS_TIMEOUT_SECONDS", "60")),
         upload=_truthy(os.environ.get("MPWG_UPLOAD"), True),
         r2=R2Config(
@@ -188,7 +230,8 @@ def load_config(overrides: Optional[dict] = None) -> CookerConfig:
             upload_concurrency=int(os.environ.get("MPWG_UPLOAD_CONCURRENCY", "2")),
             max_attempts=int(os.environ.get("MPWG_UPLOAD_MAX_ATTEMPTS", "2")),
         ),
-        palette_id=os.environ.get("MPWG_PALETTE", "mpwg-clean-2026-09"),
+        palette_id=palette_id,
+        display_min_dbz=display_min,
     )
     if overrides:
         for key, value in overrides.items():
@@ -200,5 +243,12 @@ def load_config(overrides: Optional[dict] = None) -> CookerConfig:
             and cfg.region_name in REGIONS
         ):
             cfg.bbox = REGIONS[cfg.region_name]
+        if overrides.get("product_id") and "mrms_latest_url" not in overrides:
+            spec = get_product(cfg.product_id)
+            cfg.mrms_latest_url = spec.ncep_latest_url
+            cfg.mrms_s3_prefix = spec.s3_prefix
+            if "palette_id" not in overrides or overrides.get("palette_id") is None:
+                if not os.environ.get("MPWG_PALETTE"):
+                    cfg.palette_id = spec.palette_id
     cfg.validate()
     return cfg

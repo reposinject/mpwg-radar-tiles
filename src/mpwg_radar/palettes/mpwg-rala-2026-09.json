@@ -1,0 +1,26 @@
+{
+  "id": "mpwg-rala-2026-09",
+  "name": "MPWG RALA Clean (dev)",
+  "author": "James",
+  "version": "2026-09-rala",
+  "description": "RALA/dev display of the Sep 2026 Clean ramp. Same anchors from 15 dBZ up; display_min is 0 so weak *valid* returns render. No-echo and missing/no-coverage stay transparent via the category mask — they are not mapped as 0 dBZ. This is not a 10/15/20 dBZ blanking fix. Composite production keeps mpwg-clean-2026-09 (display_min=15).",
+  "units": "dBZ",
+  "display_min_dbz": 0,
+  "below_min": [0, 0, 0, 0],
+  "stops": [
+    {"dbz": 0,  "hex": "#043816", "rgba": [4, 56, 22, 255],     "label": "0 dBZ dark green (valid only)"},
+    {"dbz": 15, "hex": "#08772E", "rgba": [8, 119, 46, 255],   "label": "15 dBZ green"},
+    {"dbz": 20, "hex": "#0FA33D", "rgba": [15, 163, 61, 255],  "label": "20 dBZ green"},
+    {"dbz": 25, "hex": "#32C94B", "rgba": [50, 201, 75, 255],  "label": "25 dBZ green"},
+    {"dbz": 30, "hex": "#F4F20D", "rgba": [244, 242, 13, 255], "label": "30 dBZ yellow"},
+    {"dbz": 35, "hex": "#F4C20D", "rgba": [244, 194, 13, 255], "label": "35 dBZ gold"},
+    {"dbz": 40, "hex": "#F58A16", "rgba": [245, 138, 22, 255], "label": "40 dBZ orange"},
+    {"dbz": 45, "hex": "#F34A1F", "rgba": [243, 74, 31, 255],  "label": "45 dBZ red-orange"},
+    {"dbz": 50, "hex": "#ED171C", "rgba": [237, 23, 28, 255],  "label": "50 dBZ red"},
+    {"dbz": 55, "hex": "#C91427", "rgba": [201, 20, 39, 255],  "label": "55 dBZ dark red"},
+    {"dbz": 60, "hex": "#E52AAE", "rgba": [229, 42, 174, 255], "label": "60 dBZ magenta"},
+    {"dbz": 65, "hex": "#B52ACB", "rgba": [181, 42, 203, 255], "label": "65 dBZ purple"},
+    {"dbz": 70, "hex": "#7828C8", "rgba": [120, 40, 200, 255], "label": "70 dBZ violet"},
+    {"dbz": 75, "hex": "#D9B6FF", "rgba": [217, 182, 255, 255], "label": "75+ dBZ lavender"}
+  ]
+}

@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from mpwg_radar.config import R2Config
+from mpwg_radar.products import DEFAULT_PRODUCT_ID, get_product
 
 log = logging.getLogger(__name__)
 
@@ -79,11 +80,13 @@ def classify_radar_files(
     local_root: Path,
     frame_id: str,
     modes: Sequence[str],
+    product_id: str = DEFAULT_PRODUCT_ID,
 ) -> Tuple[Dict[str, List[Tuple[Path, str]]], int]:
     """Split radar_root into upload groups for this cook; count skipped files.
 
     Groups (upload order): frame → root (colorbar) → latest → manifest.
-    Historical retained frames are skipped so they are not re-uploaded.
+    Historical retained frames and *other products* are skipped so they
+    are not re-uploaded (composite production stays put during a RALA cook).
     """
     mode_set = {m.strip().lower() for m in modes if m.strip()}
     groups: Dict[str, List[Tuple[Path, str]]] = {
@@ -95,7 +98,7 @@ def classify_radar_files(
     skipped = 0
     for path in _iter_files(local_root):
         rel = path.relative_to(local_root).as_posix()
-        bucket = _upload_group(rel, frame_id, mode_set)
+        bucket = _upload_group(rel, frame_id, mode_set, product_id)
         if bucket is None:
             skipped += 1
             continue
@@ -103,12 +106,46 @@ def classify_radar_files(
     return groups, skipped
 
 
-def _upload_group(rel: str, frame_id: str, modes: set[str]) -> Optional[str]:
+def _other_product_prefixes(product_id: str) -> set[str]:
+    from mpwg_radar.products import PRODUCTS
+
+    skip = set()
+    for pid, spec in PRODUCTS.items():
+        if pid == product_id:
+            continue
+        if spec.tile_prefix:
+            skip.add(spec.tile_prefix.strip("/"))
+    return skip
+
+
+def _upload_group(
+    rel: str,
+    frame_id: str,
+    modes: set[str],
+    product_id: str = DEFAULT_PRODUCT_ID,
+) -> Optional[str]:
     if rel == "manifest.json":
         return "manifest"
-    if rel in ROOT_FILES:
-        return "root"
-    parts = rel.split("/")
+    spec = get_product(product_id)
+    prefix = (spec.tile_prefix or "").strip("/")
+    other = _other_product_prefixes(product_id)
+    first = rel.split("/", 1)[0]
+    if first in other:
+        return None
+
+    rest = rel
+    if prefix:
+        if rel == f"{prefix}/colorbar.png":
+            return "root"
+        if not rel.startswith(prefix + "/"):
+            # Composite colorbar/tiles are not part of a prefixed product cook.
+            return None
+        rest = rel[len(prefix) + 1 :]
+    else:
+        if rel in ROOT_FILES:
+            return "root"
+
+    parts = rest.split("/")
     if len(parts) < 2:
         return None
     mode, slot = parts[0], parts[1]
@@ -173,13 +210,17 @@ class R2Publisher:
         local_root: Path,
         frame_id: str,
         modes: Sequence[str],
+        product_id: str = DEFAULT_PRODUCT_ID,
     ) -> UploadStats:
         """Upload this cook's new frame + latest pointers + manifest.
 
         Does not re-walk retained historical frames onto the wire.
         Manifest is last so a failed cook leaves CDN on the previous frame.
+        Other products (e.g. composite while cooking rala) are skipped.
         """
-        groups, skipped = classify_radar_files(local_root, frame_id, modes)
+        groups, skipped = classify_radar_files(
+            local_root, frame_id, modes, product_id=product_id
+        )
         phases = [
             ("frame", groups["frame"]),
             ("root", groups["root"]),

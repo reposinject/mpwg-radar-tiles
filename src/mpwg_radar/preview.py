@@ -63,7 +63,8 @@ _PREVIEW = """<!DOCTYPE html>
 def write_preview(radar_root: Path, cfg: CookerConfig) -> Path:
     """Write preview.html next to the radar output directory's parent."""
     smoke_root = radar_root.parent
-    template = "radar/clean/latest/{z}/{x}/{y}.png"
+    spec = cfg.product
+    template = "radar/" + spec.tile_url_template("clean", "latest")
     html = (
         _PREVIEW.replace("__BBOX__", json.dumps(cfg.bbox.as_dict()))
         .replace("__MIN_ZOOM__", str(cfg.min_zoom))

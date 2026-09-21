@@ -70,6 +70,12 @@ def test_default_conus_cook_writes_conus_manifest(tmp_path: Path):
     assert result["region"] == "conus"
     manifest = json.loads((tmp_path / "radar" / "manifest.json").read_text())
     assert manifest["region"] == "conus"
+    assert manifest["default_product"] == "composite"
+    assert "composite" in manifest["products"]
+    assert "rala" in manifest["products"]
+    assert manifest["products"]["composite"]["mrms_product"] == "MergedReflectivityQCComposite"
+    assert manifest["products"]["rala"]["mrms_product"] == "ReflectivityAtLowestAltitude"
+    assert manifest["products"]["composite"]["default"] is True
     assert manifest["bbox"]["west"] == pytest.approx(-130.0)
     assert manifest["bbox"]["north"] == pytest.approx(55.0)
     assert manifest["min_zoom"] == 6
@@ -179,3 +185,60 @@ def test_cook_uploads_only_new_frame_not_retention(tmp_path: Path, monkeypatch):
     assert any("/latest/" in key for key in puts)
     assert any(key.endswith("manifest.json") for key in puts)
     assert all("20260915T160000Z" not in key for key in puts)
+
+
+def test_rala_cook_writes_prefixed_tiles_and_keeps_composite(tmp_path: Path):
+    composite_cfg = CookerConfig(
+        bbox=CENTRAL_TEXAS,
+        region_name="central-texas",
+        modes=["clean"],
+        min_zoom=6,
+        max_zoom=6,
+        tile_size=512,
+        skip_empty_tiles=True,
+        keep_dbz=True,
+        data_dir=tmp_path / "data",
+        output_dir=tmp_path,
+        upload=False,
+        product_id="composite",
+    )
+    composite = cook(composite_cfg, source="synthetic", upload=False)
+    assert (tmp_path / "radar" / "clean" / "latest").is_dir()
+    assert composite["product_id"] == "composite"
+    assert composite["palette"] == "mpwg-clean-2026-09"
+
+    rala_cfg = CookerConfig(
+        bbox=CENTRAL_TEXAS,
+        region_name="central-texas",
+        modes=["clean"],
+        min_zoom=6,
+        max_zoom=6,
+        tile_size=512,
+        skip_empty_tiles=True,
+        keep_dbz=True,
+        data_dir=tmp_path / "data",
+        output_dir=tmp_path,
+        upload=False,
+        product_id="rala",
+    )
+    rala = cook(rala_cfg, source="synthetic", upload=False)
+    assert rala["product_id"] == "rala"
+    assert rala["palette"] == "mpwg-rala-2026-09"
+    assert rala["display_min_dbz"] == 0
+    assert (tmp_path / "radar" / "rala" / "clean" / "latest").is_dir()
+    assert (tmp_path / "radar" / "clean" / "latest").is_dir()  # composite untouched
+    manifest = json.loads((tmp_path / "radar" / "manifest.json").read_text())
+    assert manifest["default_product"] == "composite"
+    assert manifest["cooked_product"] == "rala"
+    assert manifest["products"]["rala"]["available"] is True
+    assert manifest["products"]["composite"]["available"] is True
+    assert manifest["products"]["rala"]["latest"] == "rala/clean/latest/{z}/{x}/{y}.png"
+    assert manifest["modes"]["clean"]["latest"] == "clean/latest/{z}/{x}/{y}.png"
+    assert manifest["palette"]["display_min_dbz"] == 15
+    tiles = list((tmp_path / "radar" / "rala" / "clean").rglob("*.png"))
+    assert tiles
+    from PIL import Image
+
+    with Image.open(tiles[0]) as im:
+        assert im.size == (512, 512)
+

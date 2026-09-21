@@ -135,6 +135,21 @@ def test_upload_frame_sends_only_new_frame_latest_and_manifest(tmp_path: Path):
     assert keys[-1] == "radar/manifest.json"
 
 
+def test_upload_frame_can_defer_manifest(tmp_path: Path):
+    radar = tmp_path / "radar"
+    _radar_tree(radar)
+    client = FakeClient()
+    publisher = _publisher(client)
+    stats = publisher.upload_frame(
+        radar, "20260915T163641Z", ["clean"], include_manifest=False
+    )
+    assert "radar/manifest.json" not in stats.keys
+    assert stats.uploaded == 5
+    manifest_stats = publisher.upload_manifest(radar)
+    assert manifest_stats.keys == ["radar/manifest.json"]
+    assert client.puts[-1]["Key"] == "radar/manifest.json"
+
+
 def test_upload_file_uses_put_object_not_upload_file(tmp_path: Path):
     png = tmp_path / "0" / "1" / "2.png"
     _touch(png, b"\x89PNG\r\n")

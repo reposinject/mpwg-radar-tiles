@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
 
 import numpy as np
@@ -9,8 +10,10 @@ import pytest
 from datetime import datetime, timezone
 
 from mpwg_radar.config import CookerConfig, R2Config
-from mpwg_radar.cooker import cook
+from mpwg_radar.cooker import _write_manifest, cook
 from mpwg_radar.geo import CENTRAL_TEXAS
+from mpwg_radar.palette import load_palette
+from mpwg_radar.products import get_product
 from mpwg_radar.publish import R2Publisher
 from mpwg_radar.synthetic import synthetic_central_texas
 
@@ -44,7 +47,7 @@ def test_synthetic_cook_writes_manifest_and_512_tiles(tmp_path: Path):
 
     with Image.open(tiles[0]) as im:
         assert im.size == (512, 512)
-    dbz_path = tmp_path / "dbz" / f"{result['frame_id']}.npz"
+    dbz_path = tmp_path / "dbz" / "composite" / f"{result['frame_id']}.npz"
     assert dbz_path.is_file()
     stored = np.load(dbz_path)
     finite = stored["dbz"][np.isfinite(stored["dbz"])]
@@ -235,10 +238,107 @@ def test_rala_cook_writes_prefixed_tiles_and_keeps_composite(tmp_path: Path):
     assert manifest["products"]["rala"]["latest"] == "rala/clean/latest/{z}/{x}/{y}.png"
     assert manifest["modes"]["clean"]["latest"] == "clean/latest/{z}/{x}/{y}.png"
     assert manifest["palette"]["display_min_dbz"] == 15
+    rala_entry = manifest["products"]["rala"]
+    assert rala_entry["latest_frame"]
+    assert rala_entry["source_valid_time"] == rala["source_valid_time"]
+    assert rala_entry["cook_finished_at"]
+    assert rala_entry["upload_finished_at"] is None
+    assert "lag_seconds" in rala_entry
+    comp_entry = manifest["products"]["composite"]
+    assert comp_entry["latest_valid_time"]
+    assert comp_entry["cook_finished_at"]
+    assert (tmp_path / "dbz" / "composite" / f"{composite['frame_id']}.npz").is_file()
+    assert (tmp_path / "dbz" / "rala" / f"{rala['frame_id']}.npz").is_file()
     tiles = list((tmp_path / "radar" / "rala" / "clean").rglob("*.png"))
     assert tiles
     from PIL import Image
 
     with Image.open(tiles[0]) as im:
         assert im.size == (512, 512)
+
+
+def test_unchanged_frame_skips_second_cook(tmp_path: Path):
+    cfg = CookerConfig(
+        bbox=CENTRAL_TEXAS,
+        region_name="central-texas",
+        modes=["clean"],
+        min_zoom=6,
+        max_zoom=6,
+        tile_size=512,
+        skip_empty_tiles=True,
+        keep_dbz=False,
+        data_dir=tmp_path / "data",
+        output_dir=tmp_path,
+        upload=False,
+        product_id="rala",
+    )
+    first = cook(cfg, source="synthetic", upload=False)
+    assert first["skipped"] is None
+    second = cook(cfg, source="synthetic", upload=False)
+    assert second["skipped"] == "unchanged"
+    assert second["frame_id"] == first["frame_id"]
+    assert second["uploaded"] == 0
+    manifest = json.loads((tmp_path / "radar" / "manifest.json").read_text())
+    assert manifest["products"]["rala"]["latest_frame"] == first["frame_id"]
+    assert manifest["default_product"] == "composite"
+
+
+def test_parallel_manifest_merges_keep_both_valid_times(tmp_path: Path):
+    """Overlapping manifest writes must keep both products' valid times."""
+    radar = tmp_path / "radar"
+    radar.mkdir()
+    palette = load_palette("mpwg-clean-2026-09")
+    rala_palette = load_palette("mpwg-rala-2026-09")
+    composite = synthetic_central_texas(
+        valid_time=datetime(2026, 9, 21, 19, 58, 40, tzinfo=timezone.utc)
+    )
+    rala = synthetic_central_texas(
+        valid_time=datetime(2026, 9, 21, 19, 50, 41, tzinfo=timezone.utc)
+    )
+    errors: list[BaseException] = []
+
+    def _write(product_id: str, frame, pal) -> None:
+        try:
+            local = CookerConfig(
+                bbox=CENTRAL_TEXAS,
+                region_name="central-texas",
+                modes=["clean"],
+                min_zoom=6,
+                max_zoom=6,
+                output_dir=tmp_path,
+                product_id=product_id,
+            )
+            for _ in range(8):
+                _write_manifest(
+                    local,
+                    pal,
+                    radar,
+                    frame,
+                    [],
+                    get_product(product_id),
+                    cook_finished_at=datetime(2026, 9, 21, 20, 0, tzinfo=timezone.utc),
+                )
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [
+        threading.Thread(target=_write, args=("composite", composite, palette)),
+        threading.Thread(target=_write, args=("rala", rala, rala_palette)),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert errors == []
+    manifest = json.loads((radar / "manifest.json").read_text())
+    assert manifest["default_product"] == "composite"
+    assert manifest["products"]["composite"]["latest_valid_time"].startswith(
+        "2026-09-21T19:58:40"
+    )
+    assert manifest["products"]["rala"]["latest_valid_time"].startswith(
+        "2026-09-21T19:50:41"
+    )
+    assert manifest["products"]["composite"]["cook_finished_at"]
+    assert manifest["products"]["rala"]["cook_finished_at"]
+    assert manifest["latest_valid_time"].startswith("2026-09-21T19:58:40")
 

@@ -9,12 +9,12 @@ No paid radar vendor. Alaska and Hawaii are outside the NOAA MRMS CONUS mosaic.
 1. Downloads free NOAA MRMS. **Production default** is `MergedReflectivityQCComposite` (QC column-max). Phase 1 also cooks **RALA** (`ReflectivityAtLowestAltitude`) as a parallel product. See [Product source](#product-source).
 2. Decodes PNG-packed GRIB2 with Pillow (no GDAL/eccodes required).
 3. Crops the CONUS mosaic bbox immediately, then QC / colorize / tile.
-4. Stores a float32 dBZ grid plus a **valid / no-echo / missing** mask (`output/dbz/{frame}.npz`) **before** colorization.
+4. Stores a float32 dBZ grid plus a **valid / no-echo / missing** mask (`output/dbz/{product}/{frame}.npz`) **before** colorization.
 5. Applies mode QC, then the palette (linear RGB interpolation on actual dBZ). Composite Clean keeps the 15 dBZ display cutoff. RALA uses a sibling palette with `display_min_dbz=0` for **valid returns only**.
 6. Writes `{z}/{x}/{y}.png` at 512 px.
 7. Writes `frame.json` + `manifest.json` (manifest lists available products and the default).
 8. Uploads **this cook's new frame + `latest` pointers + `manifest.json`** with **boto3** `put_object` to **Cloudflare R2** when `R2_*` env vars are set. Other products on disk are not re-uploaded.
-9. Repeats about every 3 minutes via systemd (**composite only** on the timer).
+9. Repeats on systemd timers. **Composite** (production default) about every 3 minutes. **RALA** about every 2 minutes, in parallel, without replacing the default product.
 
 ### CONUS crop and zooms
 
@@ -43,7 +43,7 @@ Env (also accepted as unprefixed `REGION` / `BBOX`):
 | `MPWG_MAX_ZOOM` | `8` | Inclusive; do not set `9` on t4g.small |
 | `MPWG_TILE_SIZE` | `512` | Production contract |
 | `MPWG_MODES` | `clean` | `clean`, or `clean,standard,all` |
-| `MPWG_PRODUCT` | `composite` | `composite` or `rala`. Timer stays `composite`. |
+| `MPWG_PRODUCT` | `composite` | Manual cook default. Leave `composite` in `/etc/mpwg-radar.env`. The RALA unit sets `rala` for that process only. |
 | `MPWG_DISPLAY_MIN_DBZ` | (palette JSON) | Optional display cutoff override. Composite JSON=15, RALA JSON=0. |
 | `MPWG_PALETTE` | (per product) | Optional. Composite `mpwg-clean-2026-09`; RALA `mpwg-rala-2026-09`. |
 
@@ -77,7 +77,7 @@ There is no operational 2D GRIB2 named `ReflectivityAtLowestAltitudeQC`. Do not 
 
 ### MPWG Clean palette (James, Sep 2026)
 
-Color is applied only at tile time. Physical dBZ is never quantized to the color table. Between anchors, RGB is interpolated against **actual dBZ** (0.1 dBZ LUT) — not snapped to 5 dBZ buckets. No cyan/aqua in the ramp. Values **below 15 dBZ are fully transparent** (display cutoff only; the `output/dbz/{frame}.npz` crop keeps the numbers).
+Color is applied only at tile time. Physical dBZ is never quantized to the color table. Between anchors, RGB is interpolated against **actual dBZ** (0.1 dBZ LUT) — not snapped to 5 dBZ buckets. No cyan/aqua in the ramp. Values **below 15 dBZ are fully transparent** (display cutoff only; the `output/dbz/{product}/{frame}.npz` crop keeps the numbers).
 
 | dBZ | Hex | RGB | Look |
 | --- | --- | --- | --- |
@@ -121,7 +121,7 @@ output/radar/rala/clean/latest/...
 output/radar/manifest.json                            # lists products + default
 output/radar/colorbar.png                             # composite Clean ramp
 output/radar/rala/colorbar.png                        # RALA ramp (display_min 0)
-output/dbz/{frameId}.npz                              # physical crop + category mask
+output/dbz/{product}/{frameId}.npz                  # physical crop + category mask
 ```
 
 XYZ indices match OSM/Google. Each PNG is 512×512 covering the **same** geographic extent as a 256 px slippy tile at that z/x/y.
@@ -207,7 +207,7 @@ Optional upload limits (defaults are safe on t4g.small):
 | `MPWG_UPLOAD_TIMEOUT` | `900` | Whole-upload deadline (seconds). CONUS on t4g.small at concurrency=2 is a few objects/sec (~800–1000 objects/frame; a RALA oneshot is ~230s for ~866 objects). 180s left failed uploads every cycle. |
 | `MPWG_UPLOAD_MAX_ATTEMPTS` | `2` | botocore attempts (initial + 1 retry) |
 
-Logs look like: `R2 upload start objects=N skipped=M concurrency=2 …` then `R2 upload complete started=N uploaded=N failed=0 skipped=M duration=12.34s`. `status.json` records `uploaded`, `upload_skipped`, and `upload_duration_seconds`.
+Logs look like: `R2 upload start objects=N skipped=M concurrency=2 …` then `R2 upload complete started=N uploaded=N failed=0 skipped=M duration=12.34s`. Each cook also logs one `latency product=… source_valid_time=… cook_finished_at=… upload_finished_at=… source_age_s=… cook_s=… upload_s=… lag_s=…` line. `status.json` is the composite cook (`status-rala.json` for RALA) and records `uploaded`, `upload_skipped`, `upload_duration_seconds`, and those timestamps. The same timestamps are on `manifest.json` under `products.<id>` (`source_valid_time`, `cook_finished_at`, `upload_finished_at`, `lag_seconds`).
 
 ```bash
 mpwg-radar cook                  # MRMS → tiles → R2 if env set
@@ -231,7 +231,7 @@ sudo systemctl status mpwg-radar-cooker.timer
 journalctl -u mpwg-radar-cooker.service -n 80 -f
 ```
 
-`deploy/ec2-setup.sh` installs Python, a venv, the app under `/opt/mpwg-radar`, and enables `mpwg-radar-cooker.timer` (**OnUnitActiveSec=3min**, inside the 2–5 min window).
+`deploy/ec2-setup.sh` installs Python, a venv, the app under `/opt/mpwg-radar`, and enables `mpwg-radar-cooker.timer` (**OnUnitActiveSec=3min**, composite) and `mpwg-radar-cooker-rala.timer` (**OnUnitActiveSec=2min**, RALA only). Leave `MPWG_PRODUCT=composite` in the env file.
 
 The oneshot unit runs:
 
@@ -254,7 +254,7 @@ sudo systemctl start mpwg-radar-cooker.service
 journalctl -u mpwg-radar-cooker.service -n 80 -f
 ```
 
-Confirm the new `colorbar.png` and that `clean/latest` tiles are fully transparent below 15 dBZ. Physical `output/dbz/{frame}.npz` grids are unchanged (display threshold only).
+Confirm the new `colorbar.png` and that `clean/latest` tiles are fully transparent below 15 dBZ. Physical `output/dbz/{product}/{frame}.npz` grids are unchanged (display threshold only).
 
 ### Deploy note — existing `/etc/mpwg-radar.env`
 
@@ -287,56 +287,39 @@ journalctl -u mpwg-radar-cooker.service -n 80 -f
 
 Confirm the new `manifest.json` has `"region": "conus"`, the CONUS bbox, and `min_zoom`/`max_zoom` 6–8. Map clients that still request z9 should set `maxzoom` / `maxNativeZoom` to 8 (or overzoom from z8).
 
-### Deploy note — Phase 1 RALA (do not switch the timer)
+### Deploy note — RALA cadence (parallel, default stays composite)
 
-Composite production stays on the 3-minute timer. RALA is a **manual oneshot** so a t4g.small is not cooking two CONUS mosaics at once.
+NOAA publishes `ReflectivityAtLowestAltitude` on the **same ~2 minute grid** as `MergedReflectivityQCComposite` (matching valid times on NCEP and on `noaa-mrms-pds`). There is no extra 15-minute RALA publication delay. A ~10 minute RALA timer plus `Conflicts=` against the composite unit was the age: Conflicts **stops** the other oneshot, so the cooks could not overlap and RALA frames landed about every 12 minutes (~15–17 minutes old).
+
+After this revision, leave `/etc/mpwg-radar.env` at `MPWG_PRODUCT=composite`. `ec2-setup.sh` enables two timers:
+
+| Timer | Unit | Cadence | Product |
+| --- | --- | --- | --- |
+| `mpwg-radar-cooker.timer` | `mpwg-radar-cooker.service` | 3 min | composite (production default) |
+| `mpwg-radar-cooker-rala.timer` | `mpwg-radar-cooker-rala.service` | 2 min | rala only (`--product rala`) |
+
+The RALA unit does **not** `Conflicts=` the composite unit. Tile prefixes differ (`clean/` vs `rala/clean/`). `manifest.json` is merged under a file lock and uploaded after that merge, so one cook cannot wipe the other product's `latest_valid_time`. Composite keeps a higher CPU weight and a lower OOM score on the 2 GB host. An unchanged MRMS valid time is not retiled.
+
+Expected age once both timers are caught up: each product's `latest_valid_time` is about one cook behind wall clock (composite often ~3–8 minutes, RALA similar and **within a few minutes of composite**). The floor is the shared ~2 minute MRMS update, not a separate RALA lag. `lag_seconds` on the product is `upload_finished_at - source_valid_time` (or cook finish, if that run did not upload).
 
 ```bash
 cd /opt/mpwg-radar
 sudo git pull origin main
-sudo bash deploy/ec2-setup.sh     # installs mpwg-radar-cooker-rala.service; does not enable a RALA timer
+sudo bash deploy/ec2-setup.sh
+# If a hand-rolled 10-minute RALA timer or cron is still installed, disable it.
+systemctl list-timers | grep -i rala
 ```
 
-Leave `/etc/mpwg-radar.env` at `MPWG_PRODUCT=composite` (or unset). Confirm the timer is still composite:
+Do **not** set `MPWG_PRODUCT=rala` in `/etc/mpwg-radar.env`. That would make the 3-minute timer cook RALA instead of composite.
+
+Check both timers and a latency line:
 
 ```bash
-sudo systemctl status mpwg-radar-cooker.timer
-sudo systemctl start mpwg-radar-cooker.service
-journalctl -u mpwg-radar-cooker.service -n 80 -f
-# public tiles remain: /radar/clean/latest/{z}/{x}/{y}.png
+systemctl status mpwg-radar-cooker.timer mpwg-radar-cooker-rala.timer
+journalctl -u mpwg-radar-cooker.service -u mpwg-radar-cooker-rala.service -n 80 | grep latency
 ```
 
-The rala unit unsets leftover `MRMS_LATEST_URL` / `MRMS_S3_PREFIX` from the env file and runs `mpwg-radar cook --product rala`. It `Conflicts=` with `mpwg-radar-cooker.service`, so starting it stops a running composite cook — and the composite **timer** can start composite again and stop a long RALA run. A CONUS RALA upload needs the 900s `MPWG_UPLOAD_TIMEOUT` (about 230s for ~866 objects on this host) and `TimeoutStartSec=1800` on the unit. Pause the composite timer for the run:
-
-```bash
-sudo systemctl stop mpwg-radar-cooker.timer
-sudo systemctl start mpwg-radar-cooker-rala.service
-journalctl -u mpwg-radar-cooker-rala.service -n 120 -f
-sudo systemctl start mpwg-radar-cooker.timer
-```
-
-One-off without the installed unit (same elevated timeout):
-
-```bash
-sudo systemctl stop mpwg-radar-cooker.timer
-sudo systemd-run --unit=mpwg-radar-rala-oneshot --collect \
-  --property=Type=oneshot \
-  --property=TimeoutStartSec=1800 \
-  --property=User=mpwg --property=Group=mpwg \
-  --property=WorkingDirectory=/opt/mpwg-radar \
-  --property=EnvironmentFile=/etc/mpwg-radar.env \
-  --property=Environment=MPWG_PRODUCT=rala \
-  /bin/bash -c 'unset MRMS_LATEST_URL MRMS_S3_PREFIX; exec /opt/mpwg-radar/.venv/bin/mpwg-radar cook --product rala'
-sudo systemctl start mpwg-radar-cooker.timer
-```
-
-Equivalent manual command:
-
-```bash
-sudo -u mpwg bash -c 'unset MRMS_LATEST_URL MRMS_S3_PREFIX; export MPWG_PRODUCT=rala
-  /opt/mpwg-radar/.venv/bin/mpwg-radar cook --product rala --no-upload   # local only
-'
-```
+On `manifest.json` (public CDN): `default_product` is `composite`. Compare `products.composite.latest_valid_time` and `products.rala.latest_valid_time` (same MRMS slot or one 2-minute step apart once RALA has completed a cycle). `products.rala.cook_finished_at` and `upload_finished_at` should be a few minutes after `source_valid_time`, not ~15.
 
 **Preview URL** (with `R2_PREFIX=radar`):
 
@@ -344,9 +327,7 @@ sudo -u mpwg bash -c 'unset MRMS_LATEST_URL MRMS_S3_PREFIX; export MPWG_PRODUCT=
 https://YOUR_DOMAIN/radar/rala/clean/latest/{z}/{x}/{y}.png
 ```
 
-`manifest.json` `default_product` stays `"composite"`. `products.rala.latest` is the RALA template. Composite `clean/latest` is not rewritten by a RALA cook.
-
-Do **not** set `MPWG_PRODUCT=rala` in `/etc/mpwg-radar.env` until James signs off — that would make the 3-minute timer cook RALA instead of composite.
+`products.rala.latest` is the RALA template. Composite `clean/latest` is not rewritten by a RALA cook. A CONUS RALA upload still needs the 900s `MPWG_UPLOAD_TIMEOUT` and `TimeoutStartSec=1800`.
 
 ### Deploy note — R2 upload hang on t4g.small (CONUS)
 

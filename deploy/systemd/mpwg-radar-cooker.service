@@ -11,6 +11,10 @@ WorkingDirectory=/opt/mpwg-radar
 EnvironmentFile=-/etc/mpwg-radar.env
 ExecStart=/opt/mpwg-radar/.venv/bin/mpwg-radar cook
 Nice=10
+# Prefer composite if a RALA cook is running on the same t4g.small.
+# Default CPUWeight is 100; set it so the priority is explicit next to RALA.
+CPUWeight=100
+OOMScoreAdjust=-150
 IOSchedulingClass=best-effort
 IOSchedulingPriority=6
 # t4g.small is 2 GB; abort if the OS is thrashing instead of cooking forever.

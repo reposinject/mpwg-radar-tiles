@@ -1,8 +1,12 @@
 [Unit]
-Description=MPWG NOAA MRMS RALA tile cooker (manual oneshot; not the production timer)
+Description=MPWG NOAA MRMS RALA tile cooker (parallel oneshot; not the default product)
 After=network-online.target
 Wants=network-online.target
-Conflicts=mpwg-radar-cooker.service
+# Do not Conflicts= mpwg-radar-cooker.service. Conflicts stops whichever unit
+# starts second, so a 3-minute composite timer killed in-flight RALA cooks
+# and a RALA start aborted composite. Tile trees are separate (rala/ vs
+# clean/); manifest.json is merged under an flock. Composite keeps CPU and
+# OOM priority so a parallel RALA cook yields first.
 
 [Service]
 Type=oneshot
@@ -11,14 +15,19 @@ Group=mpwg
 WorkingDirectory=/opt/mpwg-radar
 EnvironmentFile=-/etc/mpwg-radar.env
 # Force RALA endpoints even if /etc/mpwg-radar.env still has the composite URL.
+# MPWG_PRODUCT in the env file stays composite; this Environment= line wins
+# for this unit only and does not change the composite timer.
 Environment=MPWG_PRODUCT=rala
 ExecStart=/bin/bash -c 'unset MRMS_LATEST_URL MRMS_S3_PREFIX; exec /opt/mpwg-radar/.venv/bin/mpwg-radar cook --product rala'
-Nice=10
+Nice=14
+CPUWeight=60
+OOMScoreAdjust=300
 IOSchedulingClass=best-effort
-IOSchedulingPriority=6
+IOSchedulingPriority=7
 # Same 1800s as the composite unit: a CONUS RALA oneshot is ~230s of upload
 # for ~866 objects, and MPWG_UPLOAD_TIMEOUT allows up to 900s. 300s killed
-# the cook before R2 finished.
+# the cook before R2 finished. MemoryMax matches composite; if the 2 GB host
+# is exhausted the OOM score above kills this unit before the composite one.
 MemoryMax=1536M
 TimeoutStartSec=1800
 StandardOutput=journal

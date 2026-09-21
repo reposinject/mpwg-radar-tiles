@@ -14,9 +14,11 @@ Nice=10
 IOSchedulingClass=best-effort
 IOSchedulingPriority=6
 # t4g.small is 2 GB; abort if the OS is thrashing instead of cooking forever.
-# CONUS z6–8 is ~2302 candidate tiles/frame; 300s is headroom over the 3 min timer.
+# CONUS z6–8 upload of ~800–1000 objects can run several minutes on top of
+# the cook. MPWG_UPLOAD_TIMEOUT default is 900s; this must outlive cook+upload.
+# The 3 min timer waits; it does not cap this unit.
 MemoryMax=1536M
-TimeoutStartSec=300
+TimeoutStartSec=1800
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=mpwg-radar

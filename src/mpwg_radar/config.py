@@ -64,11 +64,12 @@ class R2Config:
     endpoint: str = ""
     prefix: str = "radar"
     public_base_url: str = ""
-    # Fail-fast upload limits. Defaults fit t4g.small → Cloudflare R2.
+    # Upload limits for t4g.small → Cloudflare R2.
+    # Whole-upload budget covers a CONUS frame (~800–1000 objects at concurrency=2).
     connect_timeout_seconds: float = 10.0
     read_timeout_seconds: float = 30.0
     object_timeout_seconds: float = 60.0
-    upload_timeout_seconds: float = 180.0
+    upload_timeout_seconds: float = 900.0
     upload_concurrency: int = 2
     max_attempts: int = 2
 
@@ -226,7 +227,7 @@ def load_config(overrides: Optional[dict] = None) -> CookerConfig:
             object_timeout_seconds=float(
                 os.environ.get("MPWG_UPLOAD_OBJECT_TIMEOUT", "60")
             ),
-            upload_timeout_seconds=float(os.environ.get("MPWG_UPLOAD_TIMEOUT", "180")),
+            upload_timeout_seconds=float(os.environ.get("MPWG_UPLOAD_TIMEOUT", "900")),
             upload_concurrency=int(os.environ.get("MPWG_UPLOAD_CONCURRENCY", "2")),
             max_attempts=int(os.environ.get("MPWG_UPLOAD_MAX_ATTEMPTS", "2")),
         ),

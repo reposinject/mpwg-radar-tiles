@@ -10,7 +10,7 @@ No paid radar vendor. Alaska and Hawaii are outside the NOAA MRMS CONUS mosaic.
 2. Decodes PNG-packed GRIB2 with Pillow (no GDAL/eccodes required).
 3. Crops the CONUS mosaic bbox immediately, then QC / colorize / tile.
 4. Stores a float32 dBZ grid plus a **valid / no-echo / missing** mask (`output/dbz/{frame}.npz`) **before** colorization.
-5. Applies mode QC, then the palette (linear RGB interpolation on actual dBZ). Composite Clean keeps the 15 dBZ display cutoff. RALA uses a sibling palette with `display_min_dbz=0` for **valid returns only**.
+5. Applies mode QC, then the palette (linear RGB interpolation on actual dBZ). Composite Clean keeps the 15 dBZ display cutoff. RALA uses a sibling palette with `display_min_dbz=-32` so **valid** returns, including weak and negative dBZ, stay visible. No-echo and missing stay transparent.
 6. Writes `{z}/{x}/{y}.png` at 512 px.
 7. Writes `frame.json` + `manifest.json` (manifest lists available products and the default).
 8. Uploads **this cook's new frame + `latest` pointers + `manifest.json`** with **boto3** `put_object` to **Cloudflare R2** when `R2_*` env vars are set. Other products on disk are not re-uploaded.
@@ -44,14 +44,14 @@ Env (also accepted as unprefixed `REGION` / `BBOX`):
 | `MPWG_TILE_SIZE` | `512` | Production contract |
 | `MPWG_MODES` | `clean` | `clean`, or `clean,standard,all` |
 | `MPWG_PRODUCT` | `composite` | `composite` or `rala`. Timer stays `composite`. |
-| `MPWG_DISPLAY_MIN_DBZ` | (palette JSON) | Optional display cutoff override. Composite JSON=15, RALA JSON=0. |
+| `MPWG_DISPLAY_MIN_DBZ` | (palette JSON) | Optional display cutoff override. Composite JSON=15, RALA JSON=-32. |
 | `MPWG_PALETTE` | (per product) | Optional. Composite `mpwg-clean-2026-09`; RALA `mpwg-rala-2026-09`. |
 
 ### Modes
 
 | Mode | Default | Behavior |
 | --- | --- | --- |
-| **clean** | yes | despeckle + mild 3×3 smooth. **Composite** also drops mode-grid clutter &lt; ~10 dBZ; tiles use the 15 dBZ Clean display cutoff. **RALA** does not apply a 10/15/20 dBZ floor (valid weak returns kept); display_min is 0 for valid cells only. |
+| **clean** | yes | **Composite:** drop mode-grid clutter &lt; ~10 dBZ, despeckle, mild 3×3 smooth; tiles use nearest sampling and the 15 dBZ Clean display cutoff. **RALA:** no dBZ floor and no despeckle (isolated valid cells kept); mild 3×3 smooth only rewrites cells that already have echo; tiles use masked bilinear (see below). |
 | **standard** | scaffold | ≥ ~5 dBZ, no extra cleanup (composite Clean palette still hides &lt; 15 dBZ) |
 | **all** | scaffold | fill masked only (no-echo `-99` and no-coverage `-999` stay masked) |
 
@@ -71,7 +71,7 @@ Production ingest stays on NOAA MRMS **`MergedReflectivityQCComposite`** until J
 
 RadarScope **Typed Reflectivity at Lowest Altitude** is this RALA **dBZ field** colored by MRMS `PrecipFlag` (rain / snow / convection / …). Public NOAA does not ship a single typed-RALA GRIB2. This pass ingests the dBZ field only.
 
-There is no operational 2D GRIB2 named `ReflectivityAtLowestAltitudeQC`. Do not “fix too much green” by blanking all values below 10/15/20 dBZ on RALA — missing/no-echo are a **category mask**, not a reflectivity cutoff. Composite Clean still uses `display_min_dbz=15` and Clean-mode clutter &lt; ~10 dBZ. RALA uses palette `mpwg-rala-2026-09` (`display_min_dbz=0`) for **valid** returns only.
+There is no operational 2D GRIB2 named `ReflectivityAtLowestAltitudeQC`. Do not “fix too much green” by blanking all values below 10/15/20 dBZ on RALA — missing/no-echo are a **category mask**, not a reflectivity cutoff. Composite Clean still uses `display_min_dbz=15` and Clean-mode clutter &lt; ~10 dBZ. RALA uses palette `mpwg-rala-2026-09` (`display_min_dbz=-32`) for **valid** returns only.
 
 `MRMS_LATEST_URL` / `MRMS_S3_PREFIX` remain composite-era overrides. A leftover composite URL in `/etc/mpwg-radar.env` is ignored when cooking `rala`.
 
@@ -98,7 +98,31 @@ Color is applied only at tile time. Physical dBZ is never quantized to the color
 
 Stops live in `src/mpwg_radar/palettes/mpwg-clean-2026-09.json`. `colorbar.png` is generated from the same table (15–75 dBZ).
 
-RALA tiles use `src/mpwg_radar/palettes/mpwg-rala-2026-09.json`: same Clean anchors from 15 dBZ up, plus a 0 dBZ stop, `display_min_dbz=0`. No-echo and missing stay transparent via the category mask.
+### RALA palette and render (Phase 2, test product)
+
+RALA tiles use `src/mpwg_radar/palettes/mpwg-rala-2026-09.json`. Anchors from **15 dBZ up are James's Sep 2026 hex values**, the same as Clean, interpolated in RGB against actual dBZ (yellow by ~30–31, no cyan/aqua, no 5 dBZ posterization). Below 15 the ramp is a RALA-only extension of faint greens so weak legitimate returns stay visible. `display_min_dbz=-32` matches the physical floor of a valid sample. **Transparent only for true no-echo / missing**, not for weak but valid dBZ.
+
+| dBZ | Hex | Look |
+| --- | --- | --- |
+| -32 | `#032010` | faintest green (valid only) |
+| -10 | `#043214` | faint green |
+| 0 | `#043816` | dark green |
+| 5 | `#065226` | dark green |
+| 10 | `#07682C` | green |
+| 15 … 75+ | same hex as Clean | James anchors |
+
+**Anti-bloom rule:** a pixel is painted only when its **nearest MRMS cell is valid echo**. Clear air next to a strong core stays no-echo. Inside the echo, dBZ is blended only with other echo cells, so storm interiors lose the hard 0.01° color blocks without growing the footprint into clear air. RALA Clean does not despeckle, so a one-cell valid return is kept. Composite tiles stay nearest-neighbor.
+
+The app probe is not in this repo. If it has its own stop list, use the table above (James anchors unchanged from 15 up; sub-15 stops are the RALA extension).
+
+Check one synthetic frame without deploying:
+
+```bash
+python3 -m mpwg_radar cook --product rala --region central-texas \
+  --source synthetic --no-upload --out output/rala-phase2
+```
+
+Tiles: `output/rala-phase2/radar/rala/clean/latest/{z}/{x}/{y}.png`. Opaque pixels should stop at the echo mask (hard edge, no halo). Inside the squall, color should grade instead of flat blocks. `frame.json` `valid_time` is still the frame time. `mode_spec.sample` is `masked-bilinear` and `mode_spec.despeckle` is false.
 
 ## Layout
 
@@ -120,7 +144,7 @@ output/radar/rala/clean/{frameId}/{z}/{x}/{y}.png     # RALA
 output/radar/rala/clean/latest/...
 output/radar/manifest.json                            # lists products + default
 output/radar/colorbar.png                             # composite Clean ramp
-output/radar/rala/colorbar.png                        # RALA ramp (display_min 0)
+output/radar/rala/colorbar.png                        # RALA ramp (display_min -32)
 output/dbz/{frameId}.npz                              # physical crop + category mask
 ```
 

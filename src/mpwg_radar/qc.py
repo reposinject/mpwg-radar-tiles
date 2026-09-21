@@ -1,12 +1,13 @@
 """QC / cleanup on the physical dBZ grid (before colorization).
 
 This is not the Clean display cutoff. Tiles hide reflectivity below the
-palette display_min (15 dBZ for composite Clean; ~0 for RALA valid returns).
+palette display_min (15 dBZ for composite Clean; -32 for RALA valid returns).
 The float32 dBZ crop is written before this module runs.
 
 Composite Clean still drops sub-10 dBZ clutter from the *mode* grid used
 for despeckle/smooth. RALA disables that dBZ floor (James: no 10/15/20
-cutoff this pass); spatial despeckle/smooth still run.
+cutoff) and skips despeckle so isolated valid cells survive. The mild
+3×3 smooth only rewrites cells that already have echo.
 
 Modes
 -----
@@ -70,6 +71,7 @@ def apply_mode(
     *,
     min_dbz: Optional[float] = None,
     apply_dbz_floor: bool = True,
+    apply_despeckle: bool = True,
 ) -> ReflectivityFrame:
     spec = MODES[mode]
     if frame.category is None:
@@ -80,7 +82,7 @@ def apply_mode(
     cutoff = spec.min_dbz if min_dbz is None else min_dbz
     if apply_dbz_floor:
         dbz, cat = threshold(dbz, cutoff, category=cat)
-    if spec.despeckle:
+    if spec.despeckle and apply_despeckle:
         dbz, cat = remove_small_components(dbz, spec.min_component, category=cat)
         dbz, cat = despike_isolated(dbz, category=cat)
     if spec.smooth:

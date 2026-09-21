@@ -62,9 +62,9 @@ def test_mask_fill_still_nans_both_sentinels():
 
 
 def test_missing_does_not_render_as_green_even_if_dbz_is_zero():
-    """If missing were collapsed to 0 dBZ, RALA display_min=0 would paint green."""
+    """If missing were collapsed to 0 dBZ, the RALA ramp would paint green."""
     pal = load_palette("mpwg-rala-2026-09")
-    assert pal.min_dbz == 0.0
+    assert pal.min_dbz == -32.0
     dbz = np.array([[0.0, 0.0, 5.0]], dtype=np.float32)
     cat = np.array([[CAT_MISSING, CAT_NO_ECHO, CAT_VALID]], dtype=np.uint8)
     rgba = pal.colorize(dbz, category=cat)

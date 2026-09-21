@@ -16,6 +16,8 @@ def test_default_product_is_composite():
     assert spec.quality_controlled is True
     assert spec.tile_prefix == ""
     assert spec.apply_dbz_floor is True
+    assert spec.apply_despeckle is True
+    assert spec.sample_mode == "nearest"
     assert spec.palette_id == "mpwg-clean-2026-09"
 
 
@@ -25,6 +27,8 @@ def test_rala_is_operational_param_57_not_unqc_merged():
     assert spec.mrms_name == "ReflectivityAtLowestAltitude"
     assert spec.quality_controlled is True
     assert spec.apply_dbz_floor is False
+    assert spec.apply_despeckle is False
+    assert spec.sample_mode == "masked-bilinear"
     assert spec.tile_prefix == "rala"
     assert spec.palette_id == "mpwg-rala-2026-09"
     assert "ReflectivityAtLowestAltitude" in spec.ncep_latest_url

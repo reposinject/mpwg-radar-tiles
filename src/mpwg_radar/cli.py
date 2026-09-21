@@ -197,8 +197,15 @@ def _assert_smoke_tiles(mode_root: Path) -> None:
 
 def _cmd_decode(args) -> int:
     cfg = load_config()
-    frame = decode_grib2(args.grib, bbox=cfg.bbox, product=cfg.product.mrms_name)
-    cleaned = apply_mode(frame, "clean")
+    spec = cfg.product
+    frame = decode_grib2(args.grib, bbox=cfg.bbox, product=spec.mrms_name)
+    cleaned = apply_mode(
+        frame,
+        "clean",
+        min_dbz=spec.min_dbz_override,
+        apply_dbz_floor=spec.apply_dbz_floor,
+        apply_despeckle=spec.apply_despeckle,
+    )
     import numpy as np
 
     payload = {

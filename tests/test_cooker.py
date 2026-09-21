@@ -224,7 +224,7 @@ def test_rala_cook_writes_prefixed_tiles_and_keeps_composite(tmp_path: Path):
     rala = cook(rala_cfg, source="synthetic", upload=False)
     assert rala["product_id"] == "rala"
     assert rala["palette"] == "mpwg-rala-2026-09"
-    assert rala["display_min_dbz"] == 0
+    assert rala["display_min_dbz"] == -32
     assert (tmp_path / "radar" / "rala" / "clean" / "latest").is_dir()
     assert (tmp_path / "radar" / "clean" / "latest").is_dir()  # composite untouched
     manifest = json.loads((tmp_path / "radar" / "manifest.json").read_text())
@@ -235,6 +235,17 @@ def test_rala_cook_writes_prefixed_tiles_and_keeps_composite(tmp_path: Path):
     assert manifest["products"]["rala"]["latest"] == "rala/clean/latest/{z}/{x}/{y}.png"
     assert manifest["modes"]["clean"]["latest"] == "clean/latest/{z}/{x}/{y}.png"
     assert manifest["palette"]["display_min_dbz"] == 15
+    rala_frame = json.loads(
+        (tmp_path / "radar" / "rala" / "clean" / "latest" / "frame.json").read_text()
+    )
+    assert rala_frame["mode_spec"]["despeckle"] is False
+    assert rala_frame["mode_spec"]["sample"] == "masked-bilinear"
+    assert rala_frame["valid_time"].endswith("+00:00")
+    comp_frame = json.loads(
+        (tmp_path / "radar" / "clean" / "latest" / "frame.json").read_text()
+    )
+    assert comp_frame["mode_spec"]["despeckle"] is True
+    assert comp_frame["mode_spec"]["sample"] == "nearest"
     tiles = list((tmp_path / "radar" / "rala" / "clean").rglob("*.png"))
     assert tiles
     from PIL import Image

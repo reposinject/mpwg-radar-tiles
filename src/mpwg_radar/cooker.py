@@ -75,6 +75,7 @@ def cook(
             mode,
             min_dbz=product.min_dbz_override,
             apply_dbz_floor=product.apply_dbz_floor,
+            apply_despeckle=product.apply_despeckle,
         )
         summary = _write_mode(cfg, palette, cooked, mode, radar_root, product)
         mode_summaries.append(summary)
@@ -174,6 +175,7 @@ def _write_mode(
         max_zoom=cfg.max_zoom,
         tile_size=cfg.tile_size,
         skip_empty=cfg.skip_empty_tiles,
+        sample_mode=product.sample_mode,
     )
     meta = {
         "id": frame.frame_id,
@@ -185,8 +187,9 @@ def _write_mode(
         "mode_spec": {
             "min_dbz": MODES[mode].min_dbz if product.apply_dbz_floor else None,
             "apply_dbz_floor": product.apply_dbz_floor,
-            "despeckle": MODES[mode].despeckle,
+            "despeckle": MODES[mode].despeckle and product.apply_despeckle,
             "smooth": MODES[mode].smooth,
+            "sample": product.sample_mode,
             "description": MODES[mode].description,
         },
         "palette": palette.as_dict(),

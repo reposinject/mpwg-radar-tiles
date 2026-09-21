@@ -108,3 +108,45 @@ def test_colorbar_starts_at_display_cutoff():
     assert img.size == (512, 48)
     assert tuple(int(c) for c in arr[0, 0]) == ANCHORS[15.0]
     assert arr[0, -1, 3] == 255
+
+
+# RALA extension below James's 15 dBZ anchor. Faint greens, still precip, not cyan.
+RALA_BELOW_15 = {
+    -32.0: (3, 32, 16, 255),
+    -10.0: (4, 50, 20, 255),
+    0.0: (4, 56, 22, 255),
+    5.0: (6, 82, 38, 255),
+    10.0: (7, 104, 44, 255),
+}
+
+
+def test_rala_keeps_james_anchors_and_extends_below_15():
+    pal = load_palette("mpwg-rala-2026-09")
+    assert pal.min_dbz == -32.0
+    for dbz, rgba in ANCHORS.items():
+        assert _rgba(pal, dbz) == rgba
+    for dbz, rgba in RALA_BELOW_15.items():
+        assert _rgba(pal, dbz) == rgba
+    # 31 dBZ sits between yellow (30) and gold (35), not a 5 dBZ bucket.
+    c30 = np.array(ANCHORS[30.0], dtype=np.float64)
+    c35 = np.array(ANCHORS[35.0], dtype=np.float64)
+    expected = np.clip(c30 + 0.2 * (c35 - c30), 0, 255).astype(np.uint8)
+    got = np.array(_rgba(pal, 31.0), dtype=np.uint8)
+    np.testing.assert_allclose(got, expected, atol=1)
+    assert got[0] > 200 and got[1] > 180 and got[2] < 40
+    # Weak valid dBZ is painted. Only a true below-floor sample is clear.
+    assert _rgba(pal, -5.0)[3] == 255
+    assert _rgba(pal, -32.0)[3] == 255
+    assert _rgba(pal, -32.1) == (0, 0, 0, 0)
+
+
+def test_rala_ramp_has_no_cyan_and_greens_brighten_toward_15():
+    pal = load_palette("mpwg-rala-2026-09")
+    greens = []
+    for dbz in np.linspace(-32.0, 75.0, 216):
+        r, g, b, a = _rgba(pal, float(dbz))
+        assert a == 255
+        assert not (r < 90 and g > 140 and b > 140), (dbz, r, g, b)
+        if dbz <= 30.0:
+            greens.append(g)
+    assert greens[0] < greens[len(greens) // 2] < greens[-1]

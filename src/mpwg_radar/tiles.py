@@ -100,6 +100,15 @@ def sample_nearest_many(
     return outs
 
 
+# Valid-corner weight at which a pixel sitting on the echo/clear boundary
+# fades to transparent, and the weight at which the interior stays solid.
+# 1.0 is deep inside echo. ~0.5 is the shared edge with a no-echo cell.
+# Fading only inside the echo cell rounds square corners without painting
+# the clear-air neighbor.
+_EDGE_CLEAR = np.float32(0.50)
+_EDGE_SOLID = np.float32(0.84)
+
+
 def sample_masked_bilinear(
     dbz: np.ndarray,
     lat: np.ndarray,
@@ -107,15 +116,18 @@ def sample_masked_bilinear(
     qlat: np.ndarray,
     qlon: np.ndarray,
     category: Optional[np.ndarray] = None,
-) -> Tuple[np.ndarray, np.ndarray]:
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Sample dBZ without letting echo bleed into clear air.
 
-    The nearest source cell is the footprint. If that cell is no-echo or
-    missing, the query stays that category and NaN — a 60 dBZ neighbor
-    cannot paint it. If the nearest cell is valid, dBZ is a bilinear blend
-    of the surrounding *valid* samples only. Invalid corners are left out
-    of the average, so the edge of a storm keeps its own dBZ instead of
-    fading toward zero, and no new precip appears outside the echo mask.
+    Returns ``(dbz, category, edge_scale)``. The nearest source cell is the
+    footprint. If that cell is no-echo or missing, the query stays that
+    category, NaN, and ``edge_scale`` 0 — a 60 dBZ neighbor cannot paint it.
+    If the nearest cell is valid, dBZ is a bilinear blend of the surrounding
+    *valid* samples only. Invalid corners are left out of the average, so
+    the edge of a storm keeps its own dBZ instead of fading toward zero.
+    ``edge_scale`` is 1 in the interior and falls to 0 at the boundary with
+    clear air, which knocks the square corners off the mask without ever
+    writing into a clear-air cell.
     """
     src = np.asarray(dbz)
     qlat_a = np.asarray(qlat)
@@ -128,17 +140,18 @@ def sample_masked_bilinear(
             raise ValueError("category shape must match dbz")
     out_dbz = np.full(qlat_a.shape, np.nan, dtype=np.float32)
     out_cat = np.full(qlat_a.shape, CAT_MISSING, dtype=np.uint8)
+    edge_scale = np.zeros(qlat_a.shape, dtype=np.float32)
     frac = _grid_fractional(lat, lon, qlat_a, qlon_a)
     if frac is None or src.size == 0:
-        return out_dbz, out_cat
+        return out_dbz, out_cat, edge_scale
     j_f, i_f = frac
     j_n, i_n, in_grid = _nearest_indexers(lat, lon, qlat_a, qlon_a)
     if not np.any(in_grid):
-        return out_dbz, out_cat
+        return out_dbz, out_cat, edge_scale
     out_cat[in_grid] = cat[j_n[in_grid], i_n[in_grid]]
     echo = in_grid & (out_cat == CAT_VALID)
     if not np.any(echo):
-        return out_dbz, out_cat
+        return out_dbz, out_cat, edge_scale
 
     ny, nx = src.shape
     j0 = np.floor(j_f).astype(np.int32)
@@ -166,7 +179,9 @@ def sample_masked_bilinear(
     fallback = echo & ~use
     if np.any(fallback):
         out_dbz[fallback] = src[j_n[fallback], i_n[fallback]]
-    return out_dbz, out_cat
+    mult = np.clip((den - _EDGE_CLEAR) / (_EDGE_SOLID - _EDGE_CLEAR), 0.0, 1.0)
+    edge_scale[echo] = mult[echo].astype(np.float32)
+    return out_dbz, out_cat, edge_scale
 
 
 def _query_lonlat(z: int, x: int, y: int, tile_size: int):
@@ -198,10 +213,14 @@ def render_tile(
     """
     qlon, qlat = _query_lonlat(z, x, y, tile_size)
     if sample_mode == SAMPLE_MASKED_BILINEAR:
-        sampled, sampled_cat = sample_masked_bilinear(
+        sampled, sampled_cat, edge_scale = sample_masked_bilinear(
             frame.dbz, frame.lat, frame.lon, qlat, qlon, frame.category
         )
         rgba = palette.colorize(sampled, category=sampled_cat)
+        # Palette alpha (wispy low dBZ) times an in-mask edge fade. Clear-air
+        # queries have edge_scale 0, so they cannot pick up a neighbor's color.
+        faded = rgba[..., 3].astype(np.float32) * edge_scale
+        rgba[..., 3] = np.clip(np.rint(faded), 0, 255).astype(np.uint8)
     elif sample_mode == SAMPLE_NEAREST:
         if frame.category is not None:
             sampled, sampled_cat_f = sample_nearest_many(

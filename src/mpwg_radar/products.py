@@ -71,6 +71,8 @@ class ProductSpec:
     # Composite Clean drops speckle. RALA keeps isolated valid cells.
     apply_despeckle: bool = True
     sample_mode: str = SAMPLE_NEAREST
+    # RALA: bilateral smooth inside the echo mask (cores stay, clear air stays empty).
+    edge_aware_smooth: bool = False
     attribution: str = "NOAA MRMS"
 
     @property
@@ -140,15 +142,16 @@ RALA = ProductSpec(
     apply_dbz_floor=False,
     apply_despeckle=False,
     sample_mode=SAMPLE_MASKED_BILINEAR,
+    edge_aware_smooth=True,
     min_dbz_override=None,
     description=(
         "Operational MRMS Reflectivity at Lowest Altitude (NSSL param 57). "
         "Closest public NOAA dBZ field to RadarScope Typed RALA; typing itself "
         "is PrecipFlag (not ingested this pass). Not "
         "MergedReflectivityAtLowestAltitude, which NSSL labels non-QC. "
-        "No 10/15/20 dBZ blanking; valid returns including weak and negative "
-        "dBZ use the RALA ramp. Tiles are masked-bilinear: nearest cell is "
-        "the footprint, color blends only inside echo."
+        "No 10/15/20 dBZ blanking. Edge-aware smooth and masked bilinear "
+        "run only inside echo; clear-air cells stay empty. Weak returns use "
+        "a partial-alpha green ramp."
     ),
     attribution="NOAA MRMS ReflectivityAtLowestAltitude",
 )

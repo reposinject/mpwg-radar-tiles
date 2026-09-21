@@ -51,7 +51,7 @@ Env (also accepted as unprefixed `REGION` / `BBOX`):
 
 | Mode | Default | Behavior |
 | --- | --- | --- |
-| **clean** | yes | **Composite:** drop mode-grid clutter &lt; ~10 dBZ, despeckle, mild 3×3 smooth; tiles use nearest sampling and the 15 dBZ Clean display cutoff. **RALA:** no dBZ floor and no despeckle (isolated valid cells kept); mild 3×3 smooth only rewrites cells that already have echo; tiles use masked bilinear (see below). |
+| **clean** | yes | **Composite:** drop mode-grid clutter &lt; ~10 dBZ, despeckle, mild 3×3 smooth; tiles use nearest sampling and the 15 dBZ Clean display cutoff. **RALA:** no dBZ floor and no despeckle (isolated valid cells kept); edge-aware smooth inside the echo mask; tiles use masked bilinear (see below). |
 | **standard** | scaffold | ≥ ~5 dBZ, no extra cleanup (composite Clean palette still hides &lt; 15 dBZ) |
 | **all** | scaffold | fill masked only (no-echo `-99` and no-coverage `-999` stay masked) |
 
@@ -100,20 +100,38 @@ Stops live in `src/mpwg_radar/palettes/mpwg-clean-2026-09.json`. `colorbar.png` 
 
 ### RALA palette and render (Phase 2, test product)
 
-RALA tiles use `src/mpwg_radar/palettes/mpwg-rala-2026-09.json`. Anchors from **15 dBZ up are James's Sep 2026 hex values**, the same as Clean, interpolated in RGB against actual dBZ (yellow by ~30–31, no cyan/aqua, no 5 dBZ posterization). Below 15 the ramp is a RALA-only extension of faint greens so weak legitimate returns stay visible. `display_min_dbz=-32` matches the physical floor of a valid sample. **Transparent only for true no-echo / missing**, not for weak but valid dBZ.
+RALA tiles use `src/mpwg_radar/palettes/mpwg-rala-2026-09.json`. Color is a **continuous RGB + alpha interpolation** on actual dBZ (0.1 dBZ LUT), not a nearest 5 dBZ step. Tuned to the 2026-09-21 RadarScope side-by-side over Central Texas:
 
-| dBZ | Hex | Look |
-| --- | --- | --- |
-| -32 | `#032010` | faintest green (valid only) |
-| -10 | `#043214` | faint green |
-| 0 | `#043816` | dark green |
-| 5 | `#065226` | dark green |
-| 10 | `#07682C` | green |
-| 15 … 75+ | same hex as Clean | James anchors |
+- Greens are brighter than olive `#08772E`. James `#0FA33D` (20) and `#32C94B` (25) stay, then a neon lift at 28 before yellow.
+- Orange is widened (gold at 34 through deep orange at 49) so yellow does not jump straight to red.
+- 60 dBZ is James magenta `#E52AAE`; 65+ is purple. The old dark-red hold at 55 is not a wide stop.
+- Below 15, faint greens stay visible. Alpha ramps up with dBZ so weak returns are wisps. **No hard &lt;15 cutoff.** No-echo and missing stay alpha 0.
 
-**Anti-bloom rule:** a pixel is painted only when its **nearest MRMS cell is valid echo**. Clear air next to a strong core stays no-echo. Inside the echo, dBZ is blended only with other echo cells, so storm interiors lose the hard 0.01° color blocks without growing the footprint into clear air. RALA Clean does not despeckle, so a one-cell valid return is kept. Composite tiles stay nearest-neighbor.
+| dBZ | Hex | Alpha | Look |
+| --- | --- | --- | --- |
+| -32 | `#8CFF82` | 48 | wispy green |
+| -12 | `#6EE678` | 90 | faint green |
+| 0 | `#46D264` | 130 | light green |
+| 8 | `#28D462` | 180 | green |
+| 15 | `#109E44` | 240 | brighter than `#08772E` |
+| 20 | `#0FA33D` | 255 | James green |
+| 25 | `#32C94B` | 255 | James green |
+| 28 | `#7DFF6A` | 255 | neon green |
+| 30 | `#F4F20D` | 255 | James yellow |
+| 34 | `#F4C20D` | 255 | James gold |
+| 39 | `#F7A30E` | 255 | amber |
+| 44 | `#F58A16` | 255 | James orange |
+| 49 | `#F56E14` | 255 | deep orange |
+| 53 | `#F34A1F` | 255 | James red-orange |
+| 57 | `#ED171C` | 255 | James red |
+| 60 | `#E52AAE` | 255 | James magenta |
+| 65 | `#B52ACB` | 255 | James purple |
+| 70 | `#7828C8` | 255 | James violet |
+| 75+ | `#D9B6FF` | 255 | James lavender |
 
-The app probe is not in this repo. If it has its own stop list, use the table above (James anchors unchanged from 15 up; sub-15 stops are the RALA extension).
+**Anti-bloom rule:** a pixel is painted only when its **nearest MRMS cell is valid echo**. A clear-air cell beside a core stays empty. Inside the echo, dBZ is blended only with other echo cells (bilinear at tile time, plus an edge-aware smooth that ignores neighbors more than ~10 dBZ away so cores are not smeared). Alpha falls to 0 at the boundary with clear air, which rounds the square cell corners without growing the footprint. RALA Clean does not despeckle, so a one-cell valid return is kept. Composite tiles stay nearest-neighbor.
+
+The app probe is not in this repo. If it colorizes on its own, it must interpolate these stops (including alpha). A nearest-step LUT is the banding in the recording.
 
 Check one synthetic frame without deploying:
 

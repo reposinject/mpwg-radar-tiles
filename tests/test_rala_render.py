@@ -10,7 +10,7 @@ from mpwg_radar.geo import latlon_to_global_xy, tile_bounds
 from mpwg_radar.grib import ReflectivityFrame
 from mpwg_radar.palette import load_palette
 from mpwg_radar.products import CAT_NO_ECHO, CAT_VALID, RALA
-from mpwg_radar.qc import apply_mode, mild_smooth
+from mpwg_radar.qc import apply_mode, edge_aware_smooth, mild_smooth
 from mpwg_radar.tiles import render_tile, sample_masked_bilinear
 
 
@@ -36,24 +36,35 @@ def test_clear_air_next_to_strong_echo_stays_empty_and_edge_does_not_fade():
     # 40% of the way toward the clear-air neighbor, still inside the echo cell.
     qlat = np.array([[30.00]], dtype=np.float64)
     qlon = np.array([[-98.00 + 0.004]], dtype=np.float64)
-    sampled, sampled_cat = sample_masked_bilinear(dbz, lat, lon, qlat, qlon, cat)
+    sampled, sampled_cat, edge = sample_masked_bilinear(dbz, lat, lon, qlat, qlon, cat)
     assert sampled_cat[0, 0] == CAT_VALID
     # Must stay at the echo cell's dBZ, not fade toward the empty neighbor.
     assert abs(float(sampled[0, 0]) - 60.0) < 1e-3
+    # Still inside the cell, but near clear air: square rim fades, dBZ does not.
+    assert 0.0 < float(edge[0, 0]) < 0.85
+
+    center, center_cat, center_edge = sample_masked_bilinear(
+        dbz, lat, lon, qlat, np.array([[-98.00]], dtype=np.float64), cat
+    )
+    assert abs(float(center[0, 0]) - 60.0) < 1e-3
+    assert float(center_edge[0, 0]) > 0.95
 
     # Just inside the neighboring clear-air cell. Must not pick up the 60 dBZ.
     qlon_clear = np.array([[-98.00 + 0.006]], dtype=np.float64)
-    sampled_clear, cat_clear = sample_masked_bilinear(
+    sampled_clear, cat_clear, clear_edge = sample_masked_bilinear(
         dbz, lat, lon, qlat, qlon_clear, cat
     )
     assert cat_clear[0, 0] == CAT_NO_ECHO
     assert np.isnan(sampled_clear[0, 0])
+    assert float(clear_edge[0, 0]) == 0.0
 
     pal = load_palette("mpwg-rala-2026-09")
     rgba = pal.colorize(sampled_clear, category=cat_clear)
     assert tuple(int(c) for c in rgba[0, 0]) == (0, 0, 0, 0)
-    painted = pal.colorize(sampled, category=sampled_cat)
+    painted = pal.colorize(center, category=center_cat)
     assert painted[0, 0, 3] == 255
+    # 60 dBZ is magenta, not the dark-red plateau.
+    assert int(painted[0, 0, 0]) > 180 and int(painted[0, 0, 2]) > 140
 
 
 def test_echo_neighbors_interpolate_instead_of_posterizing():
@@ -65,7 +76,8 @@ def test_echo_neighbors_interpolate_instead_of_posterizing():
     # i_f = 0.2 → 0.8*30 + 0.2*50 = 34, still nearest to the 30 dBZ cell.
     qlat = np.array([[30.00]], dtype=np.float64)
     qlon = np.array([[-97.998]], dtype=np.float64)
-    sampled, sampled_cat = sample_masked_bilinear(dbz, lat, lon, qlat, qlon, cat)
+    sampled, sampled_cat, edge = sample_masked_bilinear(dbz, lat, lon, qlat, qlon, cat)
+    assert float(edge[0, 0]) > 0.95
     assert sampled_cat[0, 0] == CAT_VALID
     assert abs(float(sampled[0, 0]) - 34.0) < 1e-3
     pal = load_palette("mpwg-rala-2026-09")
@@ -91,6 +103,7 @@ def test_isolated_weak_cell_survives_rala_clean_and_paints():
         "clean",
         apply_dbz_floor=RALA.apply_dbz_floor,
         apply_despeckle=RALA.apply_despeckle,
+        edge_aware=RALA.edge_aware_smooth,
     )
     assert kept.category[4, 4] == CAT_VALID
     assert abs(float(kept.dbz[4, 4]) - (-5.0)) < 1e-3
@@ -102,13 +115,31 @@ def test_isolated_weak_cell_survives_rala_clean_and_paints():
 
     pal = load_palette(RALA.palette_id)
     rgba = pal.colorize(kept.dbz, category=kept.category)
-    assert rgba[4, 4, 3] == 255
+    assert 0 < rgba[4, 4, 3] < 255  # wispy, not an opaque dark block
     assert rgba[4, 5, 3] == 0
-    # Faint green, not the 15 dBZ anchor and not cyan.
     r, g, b, _a = (int(c) for c in rgba[4, 4])
-    assert g > r and g > b and b < 80
+    assert g > r and g > b
+    assert not (r < 90 and g > 140 and b > 140)
     anchor15 = pal.colorize(np.array([[15.0]], dtype=np.float32))[0, 0]
     assert not np.array_equal(rgba[4, 4], anchor15)
+
+
+def test_edge_aware_smooth_keeps_cores_and_clear_air():
+    dbz = np.full((9, 9), np.nan, dtype=np.float32)
+    dbz[3:6, 3:6] = 22.0
+    dbz[4, 4] = 68.0
+    out = edge_aware_smooth(dbz)
+    assert abs(float(out[4, 4]) - 68.0) < 1.5
+    assert np.isnan(out[4, 7])
+    assert np.isnan(out[0, 0])
+    # Similar neighbors do blend, so a flat step is no longer a pure plateau edge.
+    stepped = np.full((7, 7), np.nan, dtype=np.float32)
+    stepped[:, :3] = 30.0
+    stepped[:, 3:] = 34.0
+    blended = edge_aware_smooth(stepped)
+    assert blended[3, 2] != np.float32(30.0) or blended[3, 3] != np.float32(34.0)
+    assert np.nanmax(blended) < 40
+    assert np.nanmin(blended) > 25
 
 
 def test_mild_smooth_does_not_invent_echo():
@@ -150,10 +181,15 @@ def test_rala_tile_footprint_matches_nearest_and_interior_is_smoother():
     near_px = np.array(nearest)
     smooth_px = np.array(smooth)
     np.testing.assert_array_equal(np.array(default), near_px)
-    # Anti-bloom: clear-air cells stay clear. Footprint is the nearest mask.
-    np.testing.assert_array_equal(near_px[..., 3] > 0, smooth_px[..., 3] > 0)
+    # Anti-bloom: nothing paints where nearest-neighbor is clear air.
+    near_on = near_px[..., 3] > 0
+    smooth_on = smooth_px[..., 3] > 0
+    assert not np.any(smooth_on & ~near_on)
     assert near_px[..., 3].min() == 0
     assert smooth_px[..., 3].max() == 255
+    # Square rims inside the echo mask lose full opacity. Clear air stays 0.
+    rim = (near_px[..., 3] == 255) & (smooth_px[..., 3] > 0) & (smooth_px[..., 3] < 255)
+    assert int(rim.sum()) > 20
 
     def unique_opaque(arr: np.ndarray) -> int:
         opaque = arr[arr[..., 3] > 0][:, :3]

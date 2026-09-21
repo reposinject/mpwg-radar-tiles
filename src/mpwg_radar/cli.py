@@ -205,6 +205,7 @@ def _cmd_decode(args) -> int:
         min_dbz=spec.min_dbz_override,
         apply_dbz_floor=spec.apply_dbz_floor,
         apply_despeckle=spec.apply_despeckle,
+        edge_aware=spec.edge_aware_smooth,
     )
     import numpy as np
 

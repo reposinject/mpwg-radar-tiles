@@ -70,13 +70,13 @@ def test_missing_does_not_render_as_green_even_if_dbz_is_zero():
     rgba = pal.colorize(dbz, category=cat)
     assert tuple(int(c) for c in rgba[0, 0]) == (0, 0, 0, 0)
     assert tuple(int(c) for c in rgba[0, 1]) == (0, 0, 0, 0)
-    assert rgba[0, 2, 3] == 255  # weak valid is painted
+    assert rgba[0, 2, 3] > 0  # weak valid is painted (alpha may be partial)
 
 
 def test_missing_without_mask_would_be_green_at_display_min_zero():
     pal = load_palette("mpwg-rala-2026-09")
     rgba = pal.colorize(np.array([[0.0]], dtype=np.float32))
-    assert rgba[0, 0, 3] == 255  # why the mask is required
+    assert rgba[0, 0, 3] > 0  # why the mask is required
 
 
 def test_weak_valid_dbz_not_blanked_by_rala_qc():
@@ -111,7 +111,7 @@ def test_composite_clean_floor_unchanged():
 def test_rala_palette_colors_values_below_15():
     pal = load_palette("mpwg-rala-2026-09")
     rgba = pal.colorize(np.array([[5.0]], dtype=np.float32))
-    assert rgba[0, 0, 3] == 255
+    assert 0 < rgba[0, 0, 3] < 255
     clean = load_palette("mpwg-clean-2026-09")
     assert tuple(int(c) for c in clean.colorize(np.array([[5.0]], dtype=np.float32))[0, 0]) == (
         0,

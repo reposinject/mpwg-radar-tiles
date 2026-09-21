@@ -100,31 +100,28 @@ Stops live in `src/mpwg_radar/palettes/mpwg-clean-2026-09.json`. `colorbar.png` 
 
 ### RALA palette and render (Phase 2, test product)
 
-Compared with RadarScope on the same ~3:36 PM CT frame (2026-09-21, Johnson City / Dripping Springs / San Marcos). The echo footprint already lined up, so the RALA source is unchanged (`ReflectivityAtLowestAltitude`, param 57). What did not line up was the drawing: RadarScope was a smooth contour; the MPWG test was a nearest-neighbor mosaic (hard squares, banded color, a green→yellow→red bar with no magenta). This pass fixes that drawing only.
+Compared with RadarScope on two synced frames over Johnson City / Dripping Springs / San Marcos (3:24 PM CT / 2026-09-21T20:24Z, and 3:36 PM CT). The echo footprint already lined up, so the RALA source is unchanged (`ReflectivityAtLowestAltitude`, param 57). The MPWG side of both was a nearest-neighbor mosaic. A probe on the southern storm edge read **12.0 dBZ** and painted a very dark green, so the outer envelope looked thinner and duller than RadarScope’s bright wisps.
 
-RALA tiles use `src/mpwg_radar/palettes/mpwg-rala-2026-09.json` (version `2026-09-rala-p2c`). Color is a **continuous RGB + alpha interpolation** on actual dBZ (0.1 dBZ LUT), not a nearest 5 dBZ step. Stops follow the RadarScope bar sampled from that still: dark green at the low end, neon green, yellow later than 30, a wide orange, red, then hot magenta/pink cores. James yellow `#F4F20D`, orange `#F58A16`, and magenta `#E52AAE` are kept. There is no cyan/aqua stop.
+RALA tiles use `src/mpwg_radar/palettes/mpwg-rala-2026-09.json` (version `2026-09-rala-p2d`). Color is a **continuous RGB + alpha interpolation** on actual dBZ (0.1 dBZ LUT), not a nearest 5 dBZ step. 10–15 dBZ are bright greens (12 dBZ is `#5CF058`, not the old dull `#2E6B1C`). Yellow, orange, and red each get a wider run. High cores go through James magenta `#E52AAE` into saturated `#FF14E8`. James yellow `#F4F20D` and orange `#F58A16` stay. There is no cyan/aqua stop. Returns below 10 dBZ stay dark green.
 
 | dBZ | Hex | Alpha | Look |
 | --- | --- | --- | --- |
 | -32 | `#10260C` | 120 | dark green wisp |
 | -8 | `#17350F` | 155 | RadarScope low green |
 | 5 | `#1F4D11` | 195 | dark green |
-| 12 | `#2E6B1C` | 230 | green |
-| 18 | `#388022` | 250 | green |
-| 23 | `#4CA831` | 255 | bright green |
-| 27 | `#61D23F` | 255 | vivid green |
-| 30 | `#74F94B` | 255 | neon green |
-| 33 | `#C6E24A` | 255 | yellow-green |
+| 10 | `#3CDC48` | 220 | bright green wisp |
+| 12 | `#5CF058` | 236 | probe value, bright green |
+| 15 | `#6CF860` | 250 | brighter envelope |
+| 23 | `#76FC54` | 255 | vivid green |
+| 29 | `#7EFF4E` | 255 | neon green |
+| 34 | `#C8E846` | 255 | yellow-green |
 | 36 | `#F4F20D` | 255 | James yellow |
-| 40 | `#F5BE42` | 255 | gold |
-| 44 | `#F58A16` | 255 | James orange |
-| 48 | `#EA592A` | 255 | vivid orange |
-| 53 | `#D82E20` | 255 | red |
-| 57 | `#BF281B` | 255 | dark red |
-| 60 | `#E52AAE` | 255 | James magenta |
-| 64 | `#E737F7` | 255 | hot pink |
-| 70 | `#EF8CF9` | 255 | light magenta |
-| 75+ | `#F5D0F8` | 255 | pale pink |
+| 46 | `#F8D014` | 255 | gold |
+| 55 | `#F58A16` | 255 | James orange |
+| 63 | `#E2301C` | 255 | red |
+| 66 | `#E52AAE` | 255 | James magenta |
+| 70 | `#FF14E8` | 255 | saturated magenta |
+| 75+ | `#F8C4F8` | 255 | pale pink |
 
 **Anti-bloom rule:** a pixel is colored only when its nearest MRMS cell is real echo. A clear-air cell next to a core stays empty — the outline is not allowed to grow into clear air. Inside the echo, the edge you see is a smooth contour set in from the square cell boundary, so the 0.01° grid does not read as a mosaic. A single weak cell is still drawn (a small soft dot), not deleted and not cut off below 15 dBZ. No-echo and missing stay alpha 0. Composite tiles stay nearest-neighbor with the Clean palette.
 

@@ -108,3 +108,63 @@ def test_colorbar_starts_at_display_cutoff():
     assert img.size == (512, 48)
     assert tuple(int(c) for c in arr[0, 0]) == ANCHORS[15.0]
     assert arr[0, -1, 3] == 255
+
+
+def test_rala_recording_ramp_is_continuous_and_not_olive():
+    """3:24 PM CT probe: 12 dBZ is a bright green, and high cores are magenta."""
+    pal = load_palette("mpwg-rala-2026-09")
+    assert pal.min_dbz == -32.0
+    assert _rgba(pal, 36.0) == (244, 242, 13, 255)  # James yellow
+    assert _rgba(pal, 55.0) == (245, 138, 22, 255)  # James orange, after a wide gold
+    assert _rgba(pal, 66.0) == (229, 42, 174, 255)  # James magenta
+    # 12.0 dBZ on the southern edge was dull #2E6B1C. It is a bright green now.
+    r12, g12, b12, a12 = _rgba(pal, 12.0)
+    assert g12 >= 220 and g12 > r12 + 80 and b12 < 120 and a12 >= 220
+    r10, g10, _, a10 = _rgba(pal, 10.0)
+    r15, g15, _, a15 = _rgba(pal, 15.0)
+    assert g10 > 180 and g15 >= g12 and a15 >= a12 and r10 < 120
+    # Neon green before yellow, not an olive block.
+    r30, g30, b30, a30 = _rgba(pal, 30.0)
+    assert a30 == 255 and g30 > 220 and g30 > r30 and b30 < 140
+    # Below the brightened band, 5 dBZ stays a dark green wisp.
+    r5, g5, b5, a5 = _rgba(pal, 5.0)
+    assert g5 > r5 and g5 > b5 and r5 < 80 and g5 < 140
+    assert 140 < a5 < 230
+    # 31 dBZ sits between neon green and yellow-green, not a 5 dBZ bucket.
+    c30 = np.array(_rgba(pal, 30.0), dtype=np.float64)
+    c33 = np.array(_rgba(pal, 33.0), dtype=np.float64)
+    expected = np.clip(c30 + (1.0 / 3.0) * (c33 - c30), 0, 255)
+    got = np.array(_rgba(pal, 31.0), dtype=np.float64)
+    np.testing.assert_allclose(got, expected, atol=1.5)
+    assert tuple(int(c) for c in got) not in {tuple(int(c) for c in c30), tuple(int(c) for c in c33)}
+    # Gold at 46 is not yet orange; orange at 55 is not yet red.
+    gr, gg, gb, ga = _rgba(pal, 46.0)
+    assert ga == 255 and gr > 220 and gg > 180 and gb < 40
+    red_r, red_g, red_b, _ = _rgba(pal, 63.0)
+    assert red_r > 200 and red_g < 70 and red_b < 50
+    # 70 dBZ is a more saturated magenta than James #E52AAE (lower G, higher R/B).
+    mr, mg, mb, ma = _rgba(pal, 70.0)
+    assert ma == 255 and mr >= 250 and mb >= 220 and mg < 40
+    # 65 dBZ has already left pure red.
+    r65, _, b65, a65 = _rgba(pal, 65.0)
+    assert a65 == 255 and r65 > 180 and b65 > 100
+    a_lo = _rgba(pal, -32.0)[3]
+    a0 = _rgba(pal, 0.0)[3]
+    assert 0 < a_lo < a0 < a12 < 255
+    assert _rgba(pal, 23.0)[3] == 255
+    assert _rgba(pal, -32.1) == (0, 0, 0, 0)
+    c18 = _rgba(pal, 18.0)
+    c20 = _rgba(pal, 20.0)
+    c23 = _rgba(pal, 23.0)
+    assert c20 != c18 and c20 != c23
+
+
+def test_rala_ramp_has_no_cyan_and_low_end_is_a_wisp():
+    pal = load_palette("mpwg-rala-2026-09")
+    for dbz in np.linspace(-32.0, 75.0, 216):
+        r, g, b, a = _rgba(pal, float(dbz))
+        assert a > 0
+        assert not (r < 90 and g > 140 and b > 140), (dbz, r, g, b)
+    r, g, b, a = _rgba(pal, -5.0)
+    assert 100 < a < 220
+    assert g > r and g > b and g < 140

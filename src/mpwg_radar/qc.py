@@ -1,12 +1,14 @@
 """QC / cleanup on the physical dBZ grid (before colorization).
 
 This is not the Clean display cutoff. Tiles hide reflectivity below the
-palette display_min (15 dBZ for composite Clean; ~0 for RALA valid returns).
+palette display_min (15 dBZ for composite Clean; -32 for RALA valid returns).
 The float32 dBZ crop is written before this module runs.
 
 Composite Clean still drops sub-10 dBZ clutter from the *mode* grid used
 for despeckle/smooth. RALA disables that dBZ floor (James: no 10/15/20
-cutoff this pass); spatial despeckle/smooth still run.
+cutoff) and skips despeckle so isolated valid cells survive. RALA smooth
+is edge-aware: echo cells blend only with similar echo neighbors, so a
+core is not smeared into light rain and clear air is never filled.
 
 Modes
 -----
@@ -17,6 +19,7 @@ all       scaffold: hide fill only (still masks MRMS no-echo / no-coverage)
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Dict, Optional
 
@@ -70,6 +73,9 @@ def apply_mode(
     *,
     min_dbz: Optional[float] = None,
     apply_dbz_floor: bool = True,
+    apply_despeckle: bool = True,
+    edge_aware: bool = False,
+    apply_grid_smooth: bool = True,
 ) -> ReflectivityFrame:
     spec = MODES[mode]
     if frame.category is None:
@@ -80,10 +86,12 @@ def apply_mode(
     cutoff = spec.min_dbz if min_dbz is None else min_dbz
     if apply_dbz_floor:
         dbz, cat = threshold(dbz, cutoff, category=cat)
-    if spec.despeckle:
+    if spec.despeckle and apply_despeckle:
         dbz, cat = remove_small_components(dbz, spec.min_component, category=cat)
         dbz, cat = despike_isolated(dbz, category=cat)
-    if spec.smooth:
+    if spec.smooth and apply_grid_smooth and edge_aware:
+        dbz = edge_aware_smooth(dbz)
+    elif spec.smooth and apply_grid_smooth:
         dbz = mild_smooth(dbz)
         if apply_dbz_floor:
             dbz, cat = threshold(dbz, cutoff, category=cat)
@@ -174,6 +182,49 @@ def remove_small_components(
     cat = category.copy()
     cat[dropped & (cat == CAT_VALID)] = CAT_NO_ECHO
     return out, cat
+
+
+def edge_aware_smooth(
+    dbz: np.ndarray,
+    space_sigma: float = 1.35,
+    value_sigma: float = 6.5,
+    radius: int = 3,
+) -> np.ndarray:
+    """Blend echo cells with similar neighbors. Never writes into clear air.
+
+    Spatial weight falls off over about one MRMS cell. Value weight ignores
+    neighbors more than ~10 dBZ away, so a magenta core stays a core instead
+    of being averaged down into the surrounding rain. An isolated valid cell
+    has no similar neighbor and is unchanged. NaN / no-echo cells stay NaN.
+    """
+    valid = np.isfinite(dbz)
+    if not np.any(valid):
+        return dbz
+    src = np.where(valid, dbz, np.float32(0.0)).astype(np.float32)
+    mask = valid.astype(np.float32)
+    padded_src = np.pad(src, radius, mode="constant", constant_values=0)
+    padded_mask = np.pad(mask, radius, mode="constant", constant_values=0)
+    h, w = src.shape
+    num = np.zeros((h, w), dtype=np.float32)
+    den = np.zeros((h, w), dtype=np.float32)
+    inv_s = 1.0 / (2.0 * space_sigma * space_sigma)
+    inv_v = np.float32(1.0 / (2.0 * value_sigma * value_sigma))
+    for dy in range(-radius, radius + 1):
+        for dx in range(-radius, radius + 1):
+            spatial = np.float32(math.exp(-(dy * dy + dx * dx) * inv_s))
+            y0 = radius + dy
+            x0 = radius + dx
+            window = padded_src[y0 : y0 + h, x0 : x0 + w]
+            m = padded_mask[y0 : y0 + h, x0 : x0 + w]
+            diff = window - src
+            vw = np.exp(-(diff * diff) * inv_v).astype(np.float32)
+            weight = spatial * vw * m
+            num += weight * window
+            den += weight
+    out = dbz.astype(np.float32, copy=True)
+    ok = valid & (den > 1e-6)
+    out[ok] = num[ok] / den[ok]
+    return out
 
 
 def mild_smooth(dbz: np.ndarray) -> np.ndarray:

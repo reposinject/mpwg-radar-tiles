@@ -10,7 +10,7 @@ No paid radar vendor. Alaska and Hawaii are outside the NOAA MRMS CONUS mosaic.
 2. Decodes PNG-packed GRIB2 with Pillow (no GDAL/eccodes required).
 3. Crops the CONUS mosaic bbox immediately, then QC / colorize / tile.
 4. Stores a float32 dBZ grid plus a **valid / no-echo / missing** mask (`output/dbz/{product}/{frame}.npz`) **before** colorization.
-5. Applies mode QC, then the palette (linear RGB interpolation on actual dBZ). Composite Clean keeps the 15 dBZ display cutoff. RALA uses a sibling palette with `display_min_dbz=0` for **valid returns only**.
+5. Applies mode QC, then the palette (linear RGB interpolation on actual dBZ). Composite Clean keeps the 15 dBZ display cutoff. RALA uses a sibling palette with `display_min_dbz=-32` so **valid** returns, including weak and negative dBZ, stay visible. No-echo and missing stay transparent.
 6. Writes `{z}/{x}/{y}.png` at 512 px.
 7. Writes `frame.json` + `manifest.json` (manifest lists available products and the default).
 8. Uploads **this cook's new frame + `latest` pointers + `manifest.json`** with **boto3** `put_object` to **Cloudflare R2** when `R2_*` env vars are set. Other products on disk are not re-uploaded.
@@ -44,14 +44,14 @@ Env (also accepted as unprefixed `REGION` / `BBOX`):
 | `MPWG_TILE_SIZE` | `512` | Production contract |
 | `MPWG_MODES` | `clean` | `clean`, or `clean,standard,all` |
 | `MPWG_PRODUCT` | `composite` | Manual cook default. Leave `composite` in `/etc/mpwg-radar.env`. The RALA unit sets `rala` for that process only. |
-| `MPWG_DISPLAY_MIN_DBZ` | (palette JSON) | Optional display cutoff override. Composite JSON=15, RALA JSON=0. |
+| `MPWG_DISPLAY_MIN_DBZ` | (palette JSON) | Optional display cutoff override. Composite JSON=15, RALA JSON=-32. |
 | `MPWG_PALETTE` | (per product) | Optional. Composite `mpwg-clean-2026-09`; RALA `mpwg-rala-2026-09`. |
 
 ### Modes
 
 | Mode | Default | Behavior |
 | --- | --- | --- |
-| **clean** | yes | despeckle + mild 3×3 smooth. **Composite** also drops mode-grid clutter &lt; ~10 dBZ; tiles use the 15 dBZ Clean display cutoff. **RALA** does not apply a 10/15/20 dBZ floor (valid weak returns kept); display_min is 0 for valid cells only. |
+| **clean** | yes | **Composite:** drop mode-grid clutter &lt; ~10 dBZ, despeckle, mild 3×3 smooth; tiles use nearest sampling and the 15 dBZ Clean display cutoff. **RALA:** no dBZ floor and no despeckle (isolated valid cells kept); no grid smooth; tiles use a mask-clipped contour (`masked-splat`, see below). |
 | **standard** | scaffold | ≥ ~5 dBZ, no extra cleanup (composite Clean palette still hides &lt; 15 dBZ) |
 | **all** | scaffold | fill masked only (no-echo `-99` and no-coverage `-999` stay masked) |
 
@@ -71,7 +71,7 @@ Production ingest stays on NOAA MRMS **`MergedReflectivityQCComposite`** until J
 
 RadarScope **Typed Reflectivity at Lowest Altitude** is this RALA **dBZ field** colored by MRMS `PrecipFlag` (rain / snow / convection / …). Public NOAA does not ship a single typed-RALA GRIB2. This pass ingests the dBZ field only.
 
-There is no operational 2D GRIB2 named `ReflectivityAtLowestAltitudeQC`. Do not “fix too much green” by blanking all values below 10/15/20 dBZ on RALA — missing/no-echo are a **category mask**, not a reflectivity cutoff. Composite Clean still uses `display_min_dbz=15` and Clean-mode clutter &lt; ~10 dBZ. RALA uses palette `mpwg-rala-2026-09` (`display_min_dbz=0`) for **valid** returns only.
+There is no operational 2D GRIB2 named `ReflectivityAtLowestAltitudeQC`. Do not “fix too much green” by blanking all values below 10/15/20 dBZ on RALA — missing/no-echo are a **category mask**, not a reflectivity cutoff. Composite Clean still uses `display_min_dbz=15` and Clean-mode clutter &lt; ~10 dBZ. RALA uses palette `mpwg-rala-2026-09` (`display_min_dbz=-32`) for **valid** returns only.
 
 `MRMS_LATEST_URL` / `MRMS_S3_PREFIX` remain composite-era overrides. A leftover composite URL in `/etc/mpwg-radar.env` is ignored when cooking `rala`.
 
@@ -98,7 +98,43 @@ Color is applied only at tile time. Physical dBZ is never quantized to the color
 
 Stops live in `src/mpwg_radar/palettes/mpwg-clean-2026-09.json`. `colorbar.png` is generated from the same table (15–75 dBZ).
 
-RALA tiles use `src/mpwg_radar/palettes/mpwg-rala-2026-09.json`: same Clean anchors from 15 dBZ up, plus a 0 dBZ stop, `display_min_dbz=0`. No-echo and missing stay transparent via the category mask.
+### RALA palette and render (Phase 2, test product)
+
+Compared with RadarScope on two synced frames over Johnson City / Dripping Springs / San Marcos (3:24 PM CT / 2026-09-21T20:24Z, and 3:36 PM CT). The echo footprint already lined up, so the RALA source is unchanged (`ReflectivityAtLowestAltitude`, param 57). The MPWG side of both was a nearest-neighbor mosaic. A probe on the southern storm edge read **12.0 dBZ** and painted a very dark green, so the outer envelope looked thinner and duller than RadarScope’s bright wisps.
+
+RALA tiles use `src/mpwg_radar/palettes/mpwg-rala-2026-09.json` (version `2026-09-rala-p2d`). Color is a **continuous RGB + alpha interpolation** on actual dBZ (0.1 dBZ LUT), not a nearest 5 dBZ step. 10–15 dBZ are bright greens (12 dBZ is `#5CF058`, not the old dull `#2E6B1C`). Yellow, orange, and red each get a wider run. High cores go through James magenta `#E52AAE` into saturated `#FF14E8`. James yellow `#F4F20D` and orange `#F58A16` stay. There is no cyan/aqua stop. Returns below 10 dBZ stay dark green.
+
+| dBZ | Hex | Alpha | Look |
+| --- | --- | --- | --- |
+| -32 | `#10260C` | 120 | dark green wisp |
+| -8 | `#17350F` | 155 | RadarScope low green |
+| 5 | `#1F4D11` | 195 | dark green |
+| 10 | `#3CDC48` | 220 | bright green wisp |
+| 12 | `#5CF058` | 236 | probe value, bright green |
+| 15 | `#6CF860` | 250 | brighter envelope |
+| 23 | `#76FC54` | 255 | vivid green |
+| 29 | `#7EFF4E` | 255 | neon green |
+| 34 | `#C8E846` | 255 | yellow-green |
+| 36 | `#F4F20D` | 255 | James yellow |
+| 46 | `#F8D014` | 255 | gold |
+| 55 | `#F58A16` | 255 | James orange |
+| 63 | `#E2301C` | 255 | red |
+| 66 | `#E52AAE` | 255 | James magenta |
+| 70 | `#FF14E8` | 255 | saturated magenta |
+| 75+ | `#F8C4F8` | 255 | pale pink |
+
+**Anti-bloom rule:** a pixel is colored only when its nearest MRMS cell is real echo. A clear-air cell next to a core stays empty — the outline is not allowed to grow into clear air. Inside the echo, the edge you see is a smooth contour set in from the square cell boundary, so the 0.01° grid does not read as a mosaic. A single weak cell is still drawn (a small soft dot), not deleted and not cut off below 15 dBZ. No-echo and missing stay alpha 0. Composite tiles stay nearest-neighbor with the Clean palette.
+
+The app probe is not in this repo. If it colorizes on its own, it must interpolate these stops, including alpha. A nearest-step LUT is the banding in the still.
+
+Check one synthetic frame without deploying:
+
+```bash
+python3 -m mpwg_radar cook --product rala --region central-texas \
+  --source synthetic --no-upload --out output/rala-phase2
+```
+
+Tiles: `output/rala-phase2/radar/rala/clean/latest/{z}/{x}/{y}.png`. Storm edges should be smooth and should stop at the echo mask (no halo in the clear slot). Inside the squall, color should grade from green through orange into magenta instead of flat squares. `frame.json` `valid_time` is still the frame time. `mode_spec.sample` is `masked-splat`, `mode_spec.smooth_kind` is `masked-splat`, and `mode_spec.despeckle` is false. `display_min_dbz` is -32.
 
 ## Layout
 
@@ -120,8 +156,8 @@ output/radar/rala/clean/{frameId}/{z}/{x}/{y}.png     # RALA
 output/radar/rala/clean/latest/...
 output/radar/manifest.json                            # lists products + default
 output/radar/colorbar.png                             # composite Clean ramp
-output/radar/rala/colorbar.png                        # RALA ramp (display_min 0)
-output/dbz/{product}/{frameId}.npz                  # physical crop + category mask
+output/radar/rala/colorbar.png                        # RALA ramp (display_min -32)
+output/dbz/{product}/{frameId}.npz                    # physical crop + category mask
 ```
 
 XYZ indices match OSM/Google. Each PNG is 512×512 covering the **same** geographic extent as a 256 px slippy tile at that z/x/y.

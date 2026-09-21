@@ -1,9 +1,12 @@
 """dBZ → RGBA colorization, kept separate from the physical grid.
 
 The cooker always stores/resamples reflectivity in dBZ. This module is the
-only place that applies the MPWG Clean palette (James, Sep 2026). The 15 dBZ
-Clean cutoff is a display threshold: colorize() does not mutate the input
-array, and values below the cutoff stay in the physical grid.
+only place that applies a palette. Composite uses the MPWG Clean palette
+(James, Sep 2026): values below 15 dBZ are transparent. RALA uses a sibling
+ramp with the same anchors from 15 dBZ up and a faint-green extension below
+15 so weak valid returns stay visible. colorize() does not mutate the input
+array. Transparency for no-echo and missing is a category mask, not a dBZ
+cutoff, except for the palette display_min.
 """
 
 from __future__ import annotations
@@ -45,8 +48,9 @@ class Palette:
         self.stops = sorted(self.stops, key=lambda s: s.dbz)
         if self.display_min_dbz is None:
             self.display_min_dbz = self.stops[0].dbz if self.stops else 0.0
-        self._lut_dbz0 = -20.0
         self._lut_step = 0.1
+        # Cover the display floor. Clean stays at -20; RALA starts at -32.
+        self._lut_dbz0 = min(-20.0, float(self.min_dbz))
         self._lut = self._build_lut()
 
     @property
@@ -62,7 +66,8 @@ class Palette:
         color. NaNs, no-echo, and missing/no-coverage stay transparent and
         are never treated as 0 dBZ. Between anchor stops, RGB is linearly
         interpolated against the actual dBZ value (0.1 dBZ LUT); values are
-        not quantized to 5 dBZ buckets.
+        not quantized to 5 dBZ buckets. Samples below the first stop but
+        still at/above display_min clamp to that stop.
         """
         flat = np.asarray(dbz, dtype=np.float32)
         out = np.zeros(flat.shape + (4,), dtype=np.uint8)
@@ -135,6 +140,8 @@ class Palette:
         cutoff = self.min_dbz
         if dbz < cutoff:
             return np.array(self.below_min, dtype=np.uint8)
+        if dbz <= xs[0]:
+            return ys[0].astype(np.uint8)
         if dbz >= xs[-1]:
             return ys[-1].astype(np.uint8)
         j = int(np.searchsorted(xs, dbz, side="right") - 1)

@@ -213,6 +213,7 @@ class R2Publisher:
         product_id: str = DEFAULT_PRODUCT_ID,
         include_manifest: bool = True,
         include_latest: bool = True,
+        copy_latest: bool = False,
     ) -> UploadStats:
         """Upload this cook's new frame + latest pointers + manifest.
 
@@ -227,6 +228,11 @@ class R2Publisher:
         Pass include_latest=False when this frame is older than the on-disk
         ``latest`` alias (RALA backfill). The historical frame is still
         uploaded; the live alias is left on the newer scan.
+
+        Pass copy_latest=True to server-side copy frame PNGs onto ``latest``
+        instead of uploading those bytes again. ``latest/frame.json`` is still
+        PUT because its metadata differs. RALA uses this so a 2-minute scan
+        is not stuck behind a second full PUT of the same tiles.
         """
         groups, skipped = classify_radar_files(
             local_root, frame_id, modes, product_id=product_id
@@ -234,6 +240,16 @@ class R2Publisher:
         if not include_latest:
             skipped += len(groups["latest"])
             groups["latest"] = []
+        copy_pairs: List[Tuple[str, str]] = []
+        if copy_latest and groups["latest"]:
+            kept: List[Tuple[Path, str]] = []
+            needle = "/latest/"
+            for path, rel in groups["latest"]:
+                if needle in rel and rel.endswith(".png"):
+                    copy_pairs.append((rel.replace(needle, f"/{frame_id}/", 1), rel))
+                else:
+                    kept.append((path, rel))
+            groups["latest"] = kept
         phases = [
             ("frame", groups["frame"]),
             ("root", groups["root"]),
@@ -241,7 +257,7 @@ class R2Publisher:
         ]
         if include_manifest:
             phases.append(("manifest", groups["manifest"]))
-        total = sum(len(items) for _, items in phases)
+        total = sum(len(items) for _, items in phases) + len(copy_pairs)
         stats = UploadStats(started=total, skipped=skipped)
         t0 = time.monotonic()
         deadline = t0 + self.upload_timeout
@@ -249,7 +265,7 @@ class R2Publisher:
             "R2 upload start objects=%d skipped=%d concurrency=%d "
             "connect_timeout=%.0fs read_timeout=%.0fs object_timeout=%.0fs "
             "total_timeout=%.0fs bucket=%s prefix=%s "
-            "frame_id=%s frame=%d latest=%d root=%d manifest=%d",
+            "frame_id=%s frame=%d latest=%d latest_copy=%d root=%d manifest=%d",
             stats.started,
             skipped,
             self.concurrency,
@@ -262,6 +278,7 @@ class R2Publisher:
             frame_id,
             len(groups["frame"]),
             len(groups["latest"]),
+            len(copy_pairs),
             len(groups["root"]),
             len(groups["manifest"]),
         )
@@ -271,6 +288,9 @@ class R2Publisher:
                     continue
                 log.debug("R2 upload phase=%s objects=%d", name, len(items))
                 self._run_uploads(items, stats, deadline)
+            if copy_pairs:
+                log.debug("R2 copy phase=latest objects=%d", len(copy_pairs))
+                self._run_copies(copy_pairs, stats, deadline)
         except Exception:
             stats.duration_seconds = time.monotonic() - t0
             log.error("R2 upload failed %s", stats.as_log_fields())
@@ -392,6 +412,69 @@ class R2Publisher:
                     stats.keys.append(key)
         finally:
             pool.shutdown(wait=False, cancel_futures=True)
+
+    def _run_copies(
+        self,
+        pairs: Sequence[Tuple[str, str]],
+        stats: UploadStats,
+        deadline: float,
+    ) -> None:
+        """Server-side copy frame tiles onto ``latest`` after those PUTs land."""
+        workers = min(self.concurrency, len(pairs))
+        pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="r2-copy")
+        future_map = {
+            pool.submit(self._copy_object, src, dest): (src, dest) for src, dest in pairs
+        }
+        pending = set(future_map)
+        try:
+            while pending:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    stats.failed += len(pending)
+                    raise UploadTimeoutError(
+                        f"R2 copy exceeded total timeout "
+                        f"({self.upload_timeout:.0f}s) after {stats.uploaded} "
+                        f"of {stats.started} objects"
+                    )
+                wait_for = min(remaining, self.object_timeout)
+                done, pending = wait(
+                    pending, timeout=wait_for, return_when=FIRST_COMPLETED
+                )
+                if not done:
+                    stats.failed += len(pending)
+                    raise UploadTimeoutError(
+                        f"R2 copy stalled: no object finished within "
+                        f"{wait_for:.0f}s (uploaded {stats.uploaded}/"
+                        f"{stats.started})"
+                    )
+                for fut in done:
+                    src, dest = future_map[fut]
+                    try:
+                        key = fut.result()
+                    except Exception as exc:
+                        stats.failed += 1 + len(pending)
+                        stats.errors.append(f"{dest}: {exc}")
+                        pending.clear()
+                        raise UploadError(
+                            f"R2 copy failed for {src} -> {dest}: {exc}"
+                        ) from exc
+                    stats.uploaded += 1
+                    stats.keys.append(key)
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
+
+    def _copy_object(self, source_rel: str, dest_rel: str) -> str:
+        dest = self.key_for(dest_rel)
+        src = self.key_for(source_rel)
+        self.client.copy_object(
+            Bucket=self.bucket,
+            Key=dest,
+            CopySource={"Bucket": self.bucket, "Key": src},
+            ContentType=_content_type(Path(dest_rel)),
+            CacheControl=_cache_control(dest),
+            MetadataDirective="REPLACE",
+        )
+        return dest
 
     def _put_object(self, local: Path, relative: str) -> str:
         key = self.key_for(relative)

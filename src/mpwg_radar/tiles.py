@@ -454,6 +454,9 @@ def write_tiles(
 
 
 def write_colorbar(palette: Palette, path: Path) -> None:
-    """Write the Clean ramp from the display cutoff through 75 dBZ."""
+    """Write the ramp from the display cutoff through the top stop (at least 75 dBZ)."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    palette.colorbar(dbz_min=palette.min_dbz, dbz_max=75).save(path, format="PNG")
+    top = 75.0
+    if palette.stops:
+        top = max(75.0, float(palette.stops[-1].dbz))
+    palette.colorbar(dbz_min=palette.min_dbz, dbz_max=top).save(path, format="PNG")

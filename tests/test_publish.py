@@ -78,12 +78,17 @@ def test_classify_skips_other_product_tree(tmp_path: Path):
 class FakeClient:
     def __init__(self, put=None):
         self.puts = []
+        self.copies = []
         self._put = put
 
     def put_object(self, **kwargs):
         if self._put:
             self._put(**kwargs)
         self.puts.append(kwargs)
+        return {}
+
+    def copy_object(self, **kwargs):
+        self.copies.append(kwargs)
         return {}
 
 
@@ -133,6 +138,41 @@ def test_upload_frame_sends_only_new_frame_latest_and_manifest(tmp_path: Path):
     assert "radar/colorbar.png" in keys
     assert all("20260915T160000Z" not in key for key in keys)
     assert keys[-1] == "radar/manifest.json"
+
+
+def test_rala_latest_pngs_are_server_side_copies(tmp_path: Path):
+    radar = tmp_path / "radar"
+    frame = "20260915T163641Z"
+    _touch(radar / "manifest.json", b"{}")
+    _touch(radar / "rala" / "colorbar.png", b"\x89PNG")
+    _touch(radar / "rala" / "clean" / frame / "6" / "1" / "2.png", b"tile")
+    _touch(radar / "rala" / "clean" / frame / "frame.json", b"{}")
+    _touch(radar / "rala" / "clean" / "latest" / "6" / "1" / "2.png", b"tile")
+    _touch(radar / "rala" / "clean" / "latest" / "frame.json", b"{}")
+    client = FakeClient()
+    publisher = _publisher(client)
+    stats = publisher.upload_frame(
+        radar, frame, ["clean"], product_id="rala", copy_latest=True
+    )
+    put_keys = [item["Key"] for item in client.puts]
+    assert "radar/rala/clean/latest/6/1/2.png" not in put_keys
+    assert f"radar/rala/clean/{frame}/6/1/2.png" in put_keys
+    assert "radar/rala/clean/latest/frame.json" in put_keys
+    assert len(client.copies) == 1
+    copy = client.copies[0]
+    assert copy["Key"] == "radar/rala/clean/latest/6/1/2.png"
+    assert copy["CopySource"]["Key"] == f"radar/rala/clean/{frame}/6/1/2.png"
+    assert copy["ContentType"] == "image/png"
+    assert "max-age=30" in copy["CacheControl"]
+    assert copy["MetadataDirective"] == "REPLACE"
+    assert stats.started == stats.uploaded
+    assert stats.uploaded == len(client.puts) + len(client.copies)
+
+    composite = FakeClient()
+    _radar_tree(radar)
+    plain = _publisher(composite).upload_frame(radar, frame, ["clean"])
+    assert composite.copies == []
+    assert plain.uploaded == len(composite.puts)
 
 
 def test_upload_frame_can_defer_manifest(tmp_path: Path):

@@ -3,9 +3,10 @@
 The cooker always stores/resamples reflectivity in dBZ. This module is the
 only place that applies a palette. Composite uses the MPWG Clean palette
 (James, Sep 2026): values below 15 dBZ are transparent. RALA uses a piecewise
-RadarScope-matched ramp (version 2026-09-rala-p3a): linear RGBA between the
+RadarScope-matched ramp (version 2026-09-rala-p3b): linear RGBA between the
 calibration anchors, display_min_dbz=-32 so valid weak returns stay visible,
-and no cyan/aqua stop. colorize() does not mutate the input array.
+yellow held through the low 40s, solid red from about 50 dBZ, magenta from
+about 56 dBZ, and no cyan/aqua stop. colorize() does not mutate the input array.
 Transparency for no-echo and missing is a category mask, not a dBZ cutoff,
 except for the palette display_min.
 """

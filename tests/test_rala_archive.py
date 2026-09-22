@@ -159,11 +159,13 @@ def test_manifest_lists_rala_hour_and_composite_cap_unchanged(tmp_path: Path):
     assert old not in ids
     assert len(ids) == 35
     assert ids[0] == frame_id_for(times[0])
-    assert manifest["products"]["rala"]["retention"] == {
-        "max_age_minutes": 75,
-        "max_frames": 60,
-    }
-    assert manifest["products"]["rala"]["palette"]["version"] == "2026-09-rala-p3a"
+    retention = manifest["products"]["rala"]["retention"]
+    assert retention["max_age_minutes"] == 75
+    assert retention["max_frames"] == 60
+    # 0..60 step 2 is 31 frames. The frame at exactly 60 min stays inside
+    # the small clock skew; 62 min does not.
+    assert retention["frames_last_60_minutes"] == 31
+    assert manifest["products"]["rala"]["palette"]["version"] == "2026-09-rala-p3b"
     for item, when in zip(listed, times):
         assert item["valid_time"].startswith(when.strftime("%Y-%m-%dT%H:%M:%S"))
 
@@ -277,7 +279,7 @@ def test_rala_archive_cooks_every_listed_scan_newest_first(tmp_path: Path, monke
     assert latest["id"] == frame_id_for(times[0])
     assert latest["mode_spec"]["sample"] == "masked-splat"
     assert latest["mode_spec"]["despeckle"] is False
-    assert latest["palette"]["version"] == "2026-09-rala-p3a"
+    assert latest["palette"]["version"] == "2026-09-rala-p3b"
     # Source product and QC flags are the RALA spec, not a new field.
     assert get_product("rala").mrms_name == "ReflectivityAtLowestAltitude"
     assert get_product("rala").apply_dbz_floor is False
@@ -296,7 +298,7 @@ def test_rala_archive_cooks_every_listed_scan_newest_first(tmp_path: Path, monke
     assert repaint["archive_cooked"] == 1
     assert repaint["frame_id"] == frame_id_for(times[0])
     refreshed = json.loads(stale_path.read_text())
-    assert refreshed["palette"]["version"] == "2026-09-rala-p3a"
+    assert refreshed["palette"]["version"] == "2026-09-rala-p3b"
     assert refreshed["valid_time"].startswith(times[0].strftime("%Y-%m-%dT%H:%M:%S"))
 
 

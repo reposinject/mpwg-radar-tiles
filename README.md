@@ -45,11 +45,12 @@ Env (also accepted as unprefixed `REGION` / `BBOX`):
 | `MPWG_MODES` | `clean` | `clean`, or `clean,standard,all` |
 | `MPWG_PRODUCT` | `composite` | Manual cook default. Leave `composite` in `/etc/mpwg-radar.env`. The RALA unit sets `rala` for that process only. |
 | `MPWG_DISPLAY_MIN_DBZ` | (palette JSON) | Optional display cutoff override. Composite JSON=15, RALA JSON=-32. |
-| `MPWG_PALETTE` | (per product) | Optional. Composite `mpwg-clean-2026-09`; RALA `mpwg-rala-2026-09` (version `2026-09-rala-p3a`). |
+| `MPWG_PALETTE` | (per product) | Optional. Composite `mpwg-clean-2026-09`; RALA `mpwg-rala-2026-09` (version `2026-09-rala-p3b`). |
 | `MPWG_RETENTION_FRAMES` | `30` | Composite frame cap (count only, no age limit). |
 | `MPWG_RALA_RETENTION_MINUTES` | `75` | RALA rolling window. Age is the operating limit (≥60-minute loop). |
 | `MPWG_RALA_RETENTION_FRAMES` | `60` | RALA safety ceiling, above ~38 frames at a 2-minute cadence over 75 minutes. |
-| `MPWG_RALA_CATCHUP_BUDGET_SECONDS` | `1500` | Stop starting more RALA catch-up frames after this long. Leftover real scans wait for the next run. |
+| `MPWG_RALA_CATCHUP_BUDGET_SECONDS` | `2700` | Stop starting more RALA catch-up frames after this long. Leftover real scans wait for the next run. |
+| `MPWG_RALA_UPLOAD_CONCURRENCY` | `8` | RALA `put_object` / `copy_object` workers. Ignores `MPWG_UPLOAD_CONCURRENCY`. |
 
 ### Modes
 
@@ -106,20 +107,26 @@ Stops live in `src/mpwg_radar/palettes/mpwg-clean-2026-09.json`. `colorbar.png` 
 
 The echo footprint already lined up with RadarScope, so the RALA source is unchanged (`ReflectivityAtLowestAltitude`, param 57). QC, the no-echo / missing mask, and the mask-clipped contour are unchanged. Phase 3 only replaces the color ramp and how many real scans the loop keeps.
 
-RALA tiles use `src/mpwg_radar/palettes/mpwg-rala-2026-09.json` (version `2026-09-rala-p3a`). Color is a **piecewise** RGBA interpolation on actual dBZ (0.1 dBZ LUT): linear between James's RadarScope calibration anchors, not a generic smooth gradient and not a saturation boost. There is no cyan/aqua stop. `-32` and `75` are bookends outside the calibrated range (a fainter valid wisp, and pale pink above the core). No-echo and missing stay alpha 0. Valid very-low dBZ stays visible.
+RALA tiles use `src/mpwg_radar/palettes/mpwg-rala-2026-09.json` (version `2026-09-rala-p3b`). Color is a **piecewise** RGBA interpolation on actual dBZ (0.1 dBZ LUT): linear between James's RadarScope calibration anchors and inspector taps, not a generic smooth gradient and not a saturation boost. There is no cyan/aqua stop. Yellow holds through the high 30s and low 40s; 44–48 stays light/medium orange; solid red starts near 50.6; magenta starts at 56.4 and purple by 61.2. `-32` and `78` are bookends (a fainter valid wisp, and pale pink above the core). No-echo and missing stay alpha 0. Valid very-low dBZ stays visible. The on-screen legend is this stop list. The old ticks `-32, 5, 15, 29, 36, 55, 75+` are not stops.
 
 | dBZ | Hex | Alpha | Look |
 | --- | --- | --- | --- |
-| -32 | `#0C1F0A` | 120 | faintest valid wisp (bookend) |
-| 2.0 | `#143812` | 168 | subtle weak return |
-| 10.3 | `#1F7A2C` | 230 | weak green |
-| 24.8 | `#2EAE3C` | 255 | medium green |
-| 31.7 | `#8ED23A` | 255 | strong green / approaching yellow |
-| 39.7 | `#F0C40E` | 255 | yellow→orange transition |
-| 48.3 | `#F07812` | 255 | orange |
-| 56.4 | `#E0181C` | 255 | red |
-| 64.7 | `#E232B4` | 255 | magenta/pink core |
-| 75+ | `#F4B6EC` | 255 | pale pink above the core (bookend) |
+| -32 | `#102E14` | 128 | faintest valid wisp (bookend) |
+| 2.0 | `#1C8A30` | 176 | crisp subtle weak return |
+| 10.3 | `#2E9E3C` | 235 | weak green |
+| 24.8 | `#3EBE48` | 255 | medium green |
+| 31.7 | `#9AD42E` | 255 | strong green / approaching yellow |
+| 36.9 | `#F4E400` | 255 | yellow |
+| 39.7 | `#F8DC10` | 255 | still yellow |
+| 44.1 | `#F8B020` | 255 | light orange |
+| 48.3 | `#F49822` | 255 | orange, not red |
+| 50.6 | `#DC1C18` | 255 | solid red |
+| 53.0 | `#D0141C` | 255 | red held through the low 50s |
+| 56.4 | `#C81878` | 255 | magenta begins |
+| 61.2 | `#B018D0` | 255 | purple |
+| 64.7 | `#E030D8` | 255 | magenta/pink core |
+| 70.2 | `#F048E4` | 255 | hot pink |
+| 78+ | `#FCD4FC` | 255 | pale pink above the core (bookend) |
 
 **Anti-bloom rule:** a pixel is colored only when its nearest MRMS cell is real echo. A clear-air cell next to a core stays empty — the outline is not allowed to grow into clear air. Inside the echo, the edge you see is a smooth contour set in from the square cell boundary, so the 0.01° grid does not read as a mosaic. A single weak cell is still drawn (a small soft dot), not deleted and not cut off below 15 dBZ. No-echo and missing stay alpha 0. Composite tiles stay nearest-neighbor with the Clean palette.
 
@@ -129,7 +136,9 @@ A live loop was sparse because each cook fetched only `.latest` and a shared `MP
 
 RALA now keeps a **75-minute** rolling window of real scans (max **60** frames). At a ~2-minute cadence that is about **31 frames in 60 minutes** (both ends of the hour), about **16 in 30 minutes**, and about **38** held in the full window. The frame cap sits above that count, so every real scan in the window is kept. Composite stays at `MPWG_RETENTION_FRAMES` (default 30) with no age limit. The archive only stores scans NOAA actually published.
 
-Each RALA run lists NOAA's S3 objects inside the window (NCEP `.latest` when S3 is stale or empty) and cooks every real file not already on disk, newest first. The `latest` alias stays on the newest scan when an older hole is filled. A catch-up budget (default 1500s) defers leftover scans to the next run and still cooks each real file in order. `manifest.json` lists those frames with the GRIB `valid_time`.
+Each RALA run lists NOAA's S3 objects inside the window (NCEP `.latest` when S3 is stale or empty) and cooks every real file not already on disk, newest first. The list is refreshed during a catch-up so a scan published mid-run is queued instead of waiting an hour. The `latest` alias stays on the newest scan when an older hole is filled. A catch-up budget (default 2700s) defers leftover scans to the next run and still cooks each real file in order. Nothing is interpolated. `manifest.json` lists those frames with the GRIB `valid_time` and `products.rala.retention.frames_last_60_minutes`.
+
+A live loop that only shows about five scans in 60 minutes is the cook falling behind the ~2-minute cadence: at `MPWG_UPLOAD_CONCURRENCY=2` a CONUS frame is about 866 objects and roughly 230s of upload, so a cycle lands near five frames an hour. RALA now uses concurrency 8 (the RALA unit sets `MPWG_RALA_UPLOAD_CONCURRENCY=8` after `EnvironmentFile`, so a shared concurrency of 2 does not apply) and server-side `CopyObject` of `latest` PNGs after the frame PUT. `latest/frame.json` is still uploaded. That is what lets a 60-minute window hold ~31 real frames when NOAA is on a 2-minute cadence (~16 in 30 minutes, ~38 in the 75-minute window). If a cook is still slower than two minutes, newest-first keeps the tip current and backfills real files; it does not invent the scans it missed.
 
 The app probe is not in this repo. If it colorizes on its own, it must interpolate these stops, including alpha. A nearest-step LUT is the banding in the still.
 
@@ -140,7 +149,7 @@ python3 -m mpwg_radar cook --product rala --region central-texas \
   --source synthetic --no-upload --out output/rala-phase2
 ```
 
-Tiles: `output/rala-phase2/radar/rala/clean/latest/{z}/{x}/{y}.png`. Storm edges should be smooth and should stop at the echo mask (no halo in the clear slot). Inside the squall, color should grade from green through orange into magenta instead of flat squares. `frame.json` `valid_time` is still the frame time. `mode_spec.sample` is `masked-splat`, `mode_spec.smooth_kind` is `masked-splat`, and `mode_spec.despeckle` is false. `display_min_dbz` is -32. Palette version on that frame is `2026-09-rala-p3a`.
+Tiles: `output/rala-phase2/radar/rala/clean/latest/{z}/{x}/{y}.png`. Storm edges should be smooth and should stop at the echo mask (no halo in the clear slot). Inside the squall, color should grade from green through orange into magenta instead of flat squares. `frame.json` `valid_time` is still the frame time. `mode_spec.sample` is `masked-splat`, `mode_spec.smooth_kind` is `masked-splat`, and `mode_spec.despeckle` is false. `display_min_dbz` is -32. Palette version on that frame is `2026-09-rala-p3b`.
 
 ## Layout
 
@@ -242,7 +251,7 @@ Optional upload limits (defaults are safe on t4g.small):
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `MPWG_UPLOAD_CONCURRENCY` | `2` | Parallel `put_object` workers (2 vCPU; try `4` only if logs show upload bound) |
+| `MPWG_UPLOAD_CONCURRENCY` | `2` | Composite parallel `put_object` workers. RALA ignores this and uses `MPWG_RALA_UPLOAD_CONCURRENCY` (default 8). |
 | `MPWG_UPLOAD_CONNECT_TIMEOUT` | `10` | boto3 connect timeout (seconds) |
 | `MPWG_UPLOAD_READ_TIMEOUT` | `30` | boto3 read timeout (seconds) |
 | `MPWG_UPLOAD_OBJECT_TIMEOUT` | `60` | Fail if no object completes in this many seconds |
@@ -281,7 +290,7 @@ The oneshot unit runs:
 /opt/mpwg-radar/.venv/bin/mpwg-radar cook
 ```
 
-Memory is capped at 1536M. Default CONUS zooms are **6–8** (~2302 candidate tiles/frame). Empty tiles are skipped before the 512×512 render so a t4g.small can finish the tile pass inside the 3 minute timer. Both oneshot units set `TimeoutStartSec=1800` so systemd does not SIGTERM the process while R2 upload is still inside the 900s `MPWG_UPLOAD_TIMEOUT`. A long cook delays the next timer shot; it does not change the composite product.
+Memory is capped at 1536M. Default CONUS zooms are **6–8** (~2302 candidate tiles/frame). Empty tiles are skipped before the 512×512 render so a t4g.small can finish the tile pass inside the 3 minute timer. The composite oneshot sets `TimeoutStartSec=1800` and the RALA oneshot sets `TimeoutStartSec=4200`, so systemd does not SIGTERM the process while R2 upload is still inside the 900s `MPWG_UPLOAD_TIMEOUT`. A long cook delays the next timer shot; it does not change the composite product.
 
 ### Deploy note — Sep 2026 Clean palette (15 dBZ display cutoff)
 
@@ -340,7 +349,7 @@ After this revision, leave `/etc/mpwg-radar.env` at `MPWG_PRODUCT=composite`. `e
 | `mpwg-radar-cooker.timer` | `mpwg-radar-cooker.service` | 3 min | composite (production default) |
 | `mpwg-radar-cooker-rala.timer` | `mpwg-radar-cooker-rala.service` | 2 min | rala only (`--product rala`) |
 
-The RALA unit does **not** `Conflicts=` the composite unit. Tile prefixes differ (`clean/` vs `rala/clean/`). `manifest.json` is merged under a file lock and uploaded after that merge, so one cook cannot wipe the other product's `latest_valid_time`. Composite keeps a higher CPU weight and a lower OOM score on the 2 GB host. An unchanged MRMS valid time is not retiled. Scans that arrive while a RALA cook is still running are listed from S3 on the next run and cooked if they are still inside the 75-minute window (`products.rala.retention` on the manifest). The RALA oneshot `TimeoutStartSec` is 3600 so a multi-scan catch-up is not killed mid-upload. Composite stays at 1800.
+The RALA unit does **not** `Conflicts=` the composite unit. Tile prefixes differ (`clean/` vs `rala/clean/`). `manifest.json` is merged under a file lock and uploaded after that merge, so one cook cannot wipe the other product's `latest_valid_time`. Composite keeps a higher CPU weight and a lower OOM score on the 2 GB host. An unchanged MRMS valid time is not retiled. Scans that arrive while a RALA cook is still running are listed again during that run and cooked if they are still inside the 75-minute window (`products.rala.retention` on the manifest, including `frames_last_60_minutes`). The RALA oneshot `TimeoutStartSec` is 4200 so a multi-scan catch-up (2700s budget plus the 900s upload timeout) is not killed mid-PUT. Composite stays at 1800.
 
 Expected age once both timers are caught up: each product's `latest_valid_time` is about one cook behind wall clock (composite often ~3–8 minutes, RALA similar and **within a few minutes of composite**). The floor is the shared ~2 minute MRMS update, not a separate RALA lag. `lag_seconds` on the product is `upload_finished_at - source_valid_time` (or cook finish, if that run did not upload).
 
@@ -369,7 +378,7 @@ On `manifest.json` (public CDN): `default_product` is `composite`. Compare `prod
 https://YOUR_DOMAIN/radar/rala/clean/latest/{z}/{x}/{y}.png
 ```
 
-`products.rala.latest` is the RALA template. Composite `clean/latest` is not rewritten by a RALA cook. A CONUS RALA upload still needs the 900s `MPWG_UPLOAD_TIMEOUT` and `TimeoutStartSec=1800`.
+`products.rala.latest` is the RALA template. Composite `clean/latest` is not rewritten by a RALA cook. A CONUS RALA upload still needs the 900s `MPWG_UPLOAD_TIMEOUT`. The RALA unit `TimeoutStartSec` is 4200.
 
 ### Deploy note — R2 upload hang on t4g.small (CONUS)
 

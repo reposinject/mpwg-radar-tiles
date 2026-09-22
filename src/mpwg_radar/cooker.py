@@ -63,6 +63,24 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+# A frame valid at exactly 60 minutes can tick a few seconds past the hour
+# while the manifest is written. Count it; do not count the next scan.
+_HOUR_COUNT_SKEW_SECONDS = 5.0
+
+
+def _frames_in_last_hour(frames: List[Dict], now: datetime) -> int:
+    """How many listed frames have a valid_time inside the last 60 minutes."""
+    limit = 3600.0 + _HOUR_COUNT_SKEW_SECONDS
+    count = 0
+    for item in frames:
+        when = _parse_time(item.get("valid_time"))
+        if when is None:
+            continue
+        if (now - when).total_seconds() <= limit:
+            count += 1
+    return count
+
+
 def _parse_time(value: Optional[str]) -> Optional[datetime]:
     if not value:
         return None
@@ -272,6 +290,9 @@ def cook(
             product_id=product.id,
             include_manifest=False,
             include_latest=promoted_any,
+            # Promoted RALA frames already PUT the frame tiles. Copy those
+            # bytes onto latest/ server-side instead of uploading them twice.
+            copy_latest=(product.id == "rala" and promoted_any),
         )
         # Stamp the manifest just before its PUT. The latency line below
         # uses the clock after that PUT returns.
@@ -632,9 +653,11 @@ def _write_manifest(
             entry["modes"] = this_modes
             entry["latest"] = product.tile_url_template(cfg.modes[0], "latest")
             if product.id == "rala":
+                primary_frames = this_modes.get(cfg.modes[0], {}).get("frames") or []
                 entry["retention"] = {
                     "max_age_minutes": cfg.rala_retention_minutes,
                     "max_frames": cfg.rala_retention_frames,
+                    "frames_last_60_minutes": _frames_in_last_hour(primary_frames, _now()),
                 }
             # An older backfill frame refreshes the frame list only. The live
             # tip stays on the newer scan already aliased as latest/.
@@ -955,23 +978,54 @@ def _cook_rala_archive(cfg: CookerConfig, upload: Optional[bool]) -> Dict:
     started = time.monotonic()
     budget = max(0.0, float(cfg.rala_catchup_budget_seconds))
     cooked: List[Dict] = []
-    failures = 0
-    deferred = 0
-    for index, job in enumerate(pending):
-        if index > 0 and (time.monotonic() - started) >= budget:
-            deferred = len(pending) - index
+    attempted: set[str] = set()
+    current_scans = scans
+    window_jobs = jobs
+    passes = 0
+    # Re-list each pass so a scan published while this oneshot is still
+    # cooking joins the queue. Newest incomplete first. A zero budget still
+    # cooks exactly one real frame, then stops. Failures are not retried
+    # in the same run, and the list is never subsampled.
+    while True:
+        if passes > 0 and (time.monotonic() - started) >= budget:
             log.info(
-                "RALA catch-up budget %.0fs reached; %d scan(s) still pending",
+                "RALA catch-up budget %.0fs reached after %d scan(s)",
                 budget,
-                deferred,
+                len(cooked),
             )
             break
+        try:
+            current_scans = list_recent_s3_scans(cfg, max_age=max_age)
+        except Exception as exc:  # noqa: BLE001 — keep cooking the window we have
+            log.warning(
+                "RALA archive re-list failed (%s); using the previous window",
+                exc,
+            )
+        window_jobs = _archive_jobs(current_scans, ncep, policy, _now())
+        pending = [
+            job
+            for job in window_jobs
+            if job.frame_id not in attempted
+            and not _frame_is_complete(
+                cfg,
+                radar_root,
+                product,
+                job.frame_id,
+                need_upload,
+                palette_version=palette_version,
+            )
+        ]
+        if not pending:
+            break
+        job = pending[0]
+        attempted.add(job.frame_id)
+        passes += 1
         log.info(
-            "RALA archive cook %d/%d frame=%s valid_time=%s",
-            index + 1,
-            len(pending),
+            "RALA archive cook %d frame=%s valid_time=%s window=%d",
+            passes,
             job.frame_id,
             _iso(job.valid_time),
+            len(window_jobs),
         )
         try:
             if job.loaded is not None:
@@ -994,26 +1048,38 @@ def _cook_rala_archive(cfg: CookerConfig, upload: Optional[bool]) -> Dict:
                     archive=False,
                 )
         except Exception as exc:  # noqa: BLE001 — one bad GRIB must not drop the hour
-            failures += 1
             log.error("RALA archive frame %s failed (%s); continuing", job.frame_id, exc)
             continue
         cooked.append(result)
 
     if not cooked:
         raise IngestError(
-            f"RALA archive had {len(pending)} pending scan(s) but none cooked"
+            f"RALA archive had pending scan(s) but none cooked "
+            f"(attempted={len(attempted)})"
         )
+    still_open = [
+        job
+        for job in window_jobs
+        if not _frame_is_complete(
+            cfg,
+            radar_root,
+            product,
+            job.frame_id,
+            need_upload,
+            palette_version=palette_version,
+        )
+    ]
     summary = max(cooked, key=lambda item: item.get("valid_time") or "")
     summary = dict(summary)
     summary["archive_cooked"] = len(cooked)
-    summary["archive_pending"] = deferred + failures
-    summary["archive_listed"] = len(jobs)
+    summary["archive_pending"] = len(still_open)
+    summary["archive_listed"] = len(window_jobs)
     _write_status(cfg, product, summary)
     log.info(
         "RALA archive pass cooked=%d pending=%d listed=%d newest=%s",
         len(cooked),
-        deferred + failures,
-        len(jobs),
+        len(still_open),
+        len(window_jobs),
         summary.get("frame_id"),
     )
     return summary

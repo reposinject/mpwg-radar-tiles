@@ -107,7 +107,8 @@ class CookerConfig:
     rala_retention_minutes: int = 75
     # Stop starting further RALA catch-up frames after this many seconds so
     # the oneshot can finish the in-flight upload before systemd stops it.
-    rala_catchup_budget_seconds: float = 1500.0
+    # ~30 frames at a sped-up RALA upload still fit under the unit timeout.
+    rala_catchup_budget_seconds: float = 2700.0
     log_level: str = "INFO"
     product_id: str = DEFAULT_PRODUCT_ID
     # NOAA MRMS endpoints. Defaults follow product_id; composite stays the
@@ -215,7 +216,7 @@ def load_config(overrides: Optional[dict] = None) -> CookerConfig:
         rala_retention_frames=int(os.environ.get("MPWG_RALA_RETENTION_FRAMES", "60")),
         rala_retention_minutes=int(os.environ.get("MPWG_RALA_RETENTION_MINUTES", "75")),
         rala_catchup_budget_seconds=float(
-            os.environ.get("MPWG_RALA_CATCHUP_BUDGET_SECONDS", "1500")
+            os.environ.get("MPWG_RALA_CATCHUP_BUDGET_SECONDS", "2700")
         ),
         log_level=os.environ.get("MPWG_LOG_LEVEL", "INFO").upper(),
         product_id=product_id,
@@ -242,7 +243,7 @@ def load_config(overrides: Optional[dict] = None) -> CookerConfig:
                 os.environ.get("MPWG_UPLOAD_OBJECT_TIMEOUT", "60")
             ),
             upload_timeout_seconds=float(os.environ.get("MPWG_UPLOAD_TIMEOUT", "900")),
-            upload_concurrency=int(os.environ.get("MPWG_UPLOAD_CONCURRENCY", "2")),
+            upload_concurrency=_upload_concurrency(product_id),
             max_attempts=int(os.environ.get("MPWG_UPLOAD_MAX_ATTEMPTS", "2")),
         ),
         palette_id=palette_id,
@@ -265,5 +266,23 @@ def load_config(overrides: Optional[dict] = None) -> CookerConfig:
             if "palette_id" not in overrides or overrides.get("palette_id") is None:
                 if not os.environ.get("MPWG_PALETTE"):
                     cfg.palette_id = spec.palette_id
+    # Apply after --product overrides. RALA must not inherit concurrency 2:
+    # at ~4 objects/s a CONUS frame cannot keep a 2-minute scan (~5 frames/hour).
+    if not overrides or "r2" not in overrides:
+        cfg.r2.upload_concurrency = _upload_concurrency(cfg.product_id)
     cfg.validate()
     return cfg
+
+
+def _upload_concurrency(product_id: str) -> int:
+    """Composite stays at 2. RALA defaults to 8 unless explicitly overridden.
+
+    ``MPWG_UPLOAD_CONCURRENCY`` is the composite/shared knob. A host that set
+    it to 2 must not throttle the RALA archive.
+    """
+    if product_id == "rala":
+        raw = os.environ.get("MPWG_RALA_UPLOAD_CONCURRENCY")
+        if raw is not None and str(raw).strip():
+            return max(1, int(raw))
+        return 8
+    return max(1, int(os.environ.get("MPWG_UPLOAD_CONCURRENCY", "2")))

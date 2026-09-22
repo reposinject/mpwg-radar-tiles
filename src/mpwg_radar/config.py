@@ -99,6 +99,15 @@ class CookerConfig:
     data_dir: Path = Path("./data")
     output_dir: Path = Path("./output")
     retention_frames: int = 30
+    # RALA rolling archive. Composite keeps retention_frames (count only).
+    # A low MPWG_RETENTION_FRAMES must not thin the RALA loop. Age is the
+    # operating limit (75 min ≥ a 60-minute loop). The frame cap sits above
+    # a ~2-minute cadence over that window (~38 frames) so it does not subsample.
+    rala_retention_frames: int = 60
+    rala_retention_minutes: int = 75
+    # Stop starting further RALA catch-up frames after this many seconds so
+    # the oneshot can finish the in-flight upload before systemd stops it.
+    rala_catchup_budget_seconds: float = 1500.0
     log_level: str = "INFO"
     product_id: str = DEFAULT_PRODUCT_ID
     # NOAA MRMS endpoints. Defaults follow product_id; composite stays the
@@ -203,6 +212,11 @@ def load_config(overrides: Optional[dict] = None) -> CookerConfig:
         data_dir=Path(os.environ.get("MPWG_DATA_DIR", "./data")),
         output_dir=Path(os.environ.get("MPWG_OUTPUT_DIR", "./output")),
         retention_frames=int(os.environ.get("MPWG_RETENTION_FRAMES", "30")),
+        rala_retention_frames=int(os.environ.get("MPWG_RALA_RETENTION_FRAMES", "60")),
+        rala_retention_minutes=int(os.environ.get("MPWG_RALA_RETENTION_MINUTES", "75")),
+        rala_catchup_budget_seconds=float(
+            os.environ.get("MPWG_RALA_CATCHUP_BUDGET_SECONDS", "1500")
+        ),
         log_level=os.environ.get("MPWG_LOG_LEVEL", "INFO").upper(),
         product_id=product_id,
         mrms_latest_url=mrms_url,

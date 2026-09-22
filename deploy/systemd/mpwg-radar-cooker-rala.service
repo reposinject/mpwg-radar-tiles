@@ -24,12 +24,14 @@ CPUWeight=60
 OOMScoreAdjust=300
 IOSchedulingClass=best-effort
 IOSchedulingPriority=7
-# Same 1800s as the composite unit: a CONUS RALA oneshot is ~230s of upload
-# for ~866 objects, and MPWG_UPLOAD_TIMEOUT allows up to 900s. 300s killed
-# the cook before R2 finished. MemoryMax matches composite; if the 2 GB host
-# is exhausted the OOM score above kills this unit before the composite one.
+# One RALA invocation may cook several real scans missed while the previous
+# cook was running (S3 catch-up). MPWG_RALA_CATCHUP_BUDGET_SECONDS defaults
+# to 1500s of new frames, and MPWG_UPLOAD_TIMEOUT allows 900s for the last
+# upload. 3600s covers that without SIGTERM mid-PUT. Composite stays at 1800s.
+# MemoryMax matches composite; if the 2 GB host is exhausted the OOM score
+# above kills this unit before the composite one.
 MemoryMax=1536M
-TimeoutStartSec=1800
+TimeoutStartSec=3600
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=mpwg-radar-rala

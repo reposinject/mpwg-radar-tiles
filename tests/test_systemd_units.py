@@ -28,6 +28,13 @@ def _directives(text: str) -> list[str]:
     ]
 
 
+def test_rala_timeout_covers_archive_catchup_without_raising_composite():
+    rala = _text("mpwg-radar-cooker-rala.service")
+    composite = _text("mpwg-radar-cooker.service")
+    assert "TimeoutStartSec=3600" in rala
+    assert "TimeoutStartSec=1800" in composite
+
+
 def test_rala_service_does_not_conflict_with_composite():
     unit = _text("mpwg-radar-cooker-rala.service")
     directives = _directives(unit)

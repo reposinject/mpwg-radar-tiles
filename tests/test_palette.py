@@ -110,61 +110,79 @@ def test_colorbar_starts_at_display_cutoff():
     assert arr[0, -1, 3] == 255
 
 
-def test_rala_recording_ramp_is_continuous_and_not_olive():
-    """3:24 PM CT probe: 12 dBZ is a bright green, and high cores are magenta."""
+# James Phase 3 calibration anchors (piecewise, version 2026-09-rala-p3a).
+RALA_ANCHORS = {
+    -32.0: (12, 31, 10, 120),
+    2.0: (20, 56, 18, 168),
+    10.3: (31, 122, 44, 230),
+    24.8: (46, 174, 60, 255),
+    31.7: (142, 210, 58, 255),
+    39.7: (240, 196, 14, 255),
+    48.3: (240, 120, 18, 255),
+    56.4: (224, 24, 28, 255),
+    64.7: (226, 50, 180, 255),
+    75.0: (244, 182, 236, 255),
+}
+
+
+def test_rala_piecewise_anchors_match_radarscope_stops():
     pal = load_palette("mpwg-rala-2026-09")
+    assert pal.version == "2026-09-rala-p3a"
     assert pal.min_dbz == -32.0
-    assert _rgba(pal, 36.0) == (244, 242, 13, 255)  # James yellow
-    assert _rgba(pal, 55.0) == (245, 138, 22, 255)  # James orange, after a wide gold
-    assert _rgba(pal, 66.0) == (229, 42, 174, 255)  # James magenta
-    # 12.0 dBZ on the southern edge was dull #2E6B1C. It is a bright green now.
-    r12, g12, b12, a12 = _rgba(pal, 12.0)
-    assert g12 >= 220 and g12 > r12 + 80 and b12 < 120 and a12 >= 220
-    r10, g10, _, a10 = _rgba(pal, 10.0)
-    r15, g15, _, a15 = _rgba(pal, 15.0)
-    assert g10 > 180 and g15 >= g12 and a15 >= a12 and r10 < 120
-    # Neon green before yellow, not an olive block.
-    r30, g30, b30, a30 = _rgba(pal, 30.0)
-    assert a30 == 255 and g30 > 220 and g30 > r30 and b30 < 140
-    # Below the brightened band, 5 dBZ stays a dark green wisp.
-    r5, g5, b5, a5 = _rgba(pal, 5.0)
-    assert g5 > r5 and g5 > b5 and r5 < 80 and g5 < 140
-    assert 140 < a5 < 230
-    # 31 dBZ sits between neon green and yellow-green, not a 5 dBZ bucket.
-    c30 = np.array(_rgba(pal, 30.0), dtype=np.float64)
-    c33 = np.array(_rgba(pal, 33.0), dtype=np.float64)
-    expected = np.clip(c30 + (1.0 / 3.0) * (c33 - c30), 0, 255)
-    got = np.array(_rgba(pal, 31.0), dtype=np.float64)
-    np.testing.assert_allclose(got, expected, atol=1.5)
-    assert tuple(int(c) for c in got) not in {tuple(int(c) for c in c30), tuple(int(c) for c in c33)}
-    # Gold at 46 is not yet orange; orange at 55 is not yet red.
-    gr, gg, gb, ga = _rgba(pal, 46.0)
-    assert ga == 255 and gr > 220 and gg > 180 and gb < 40
-    red_r, red_g, red_b, _ = _rgba(pal, 63.0)
-    assert red_r > 200 and red_g < 70 and red_b < 50
-    # 70 dBZ is a more saturated magenta than James #E52AAE (lower G, higher R/B).
-    mr, mg, mb, ma = _rgba(pal, 70.0)
-    assert ma == 255 and mr >= 250 and mb >= 220 and mg < 40
-    # 65 dBZ has already left pure red.
-    r65, _, b65, a65 = _rgba(pal, 65.0)
-    assert a65 == 255 and r65 > 180 and b65 > 100
-    a_lo = _rgba(pal, -32.0)[3]
-    a0 = _rgba(pal, 0.0)[3]
-    assert 0 < a_lo < a0 < a12 < 255
-    assert _rgba(pal, 23.0)[3] == 255
+    assert [stop.dbz for stop in pal.stops] == list(RALA_ANCHORS)
+    for dbz, rgba in RALA_ANCHORS.items():
+        assert _rgba(pal, dbz) == rgba
+    assert _rgba(pal, 80.0) == RALA_ANCHORS[75.0]
     assert _rgba(pal, -32.1) == (0, 0, 0, 0)
-    c18 = _rgba(pal, 18.0)
-    c20 = _rgba(pal, 20.0)
-    c23 = _rgba(pal, 23.0)
-    assert c20 != c18 and c20 != c23
 
 
-def test_rala_ramp_has_no_cyan_and_low_end_is_a_wisp():
+def test_rala_ramps_are_piecewise_not_a_single_gradient():
+    """Midpoints sit on the segment between neighboring anchors, not a global curve."""
     pal = load_palette("mpwg-rala-2026-09")
+    stops = list(RALA_ANCHORS.items())
+    for (lo, clo), (hi, chi) in zip(stops, stops[1:]):
+        mid = (lo + hi) / 2.0
+        expected = np.clip(
+            np.array(clo, dtype=np.float64) * 0.5 + np.array(chi, dtype=np.float64) * 0.5,
+            0,
+            255,
+        )
+        got = np.array(_rgba(pal, mid), dtype=np.float64)
+        np.testing.assert_allclose(got, expected, atol=1.5)
+        assert tuple(int(c) for c in got) not in {clo, chi}
+
+
+def test_rala_anchor_feel_and_no_cyan():
+    pal = load_palette("mpwg-rala-2026-09")
+    # 2 dBZ is visible and subtle: green, partial alpha, not a loud swath.
+    r2, g2, b2, a2 = _rgba(pal, 2.0)
+    assert 100 < a2 < 200
+    assert g2 > r2 and g2 > b2 and g2 < 80
+    # 10.3 is weak green, not neon.
+    r10, g10, b10, a10 = _rgba(pal, 10.3)
+    assert a10 >= 200 and g10 > r10 + 40 and g10 < 160 and b10 < 80 and r10 < 60
+    # 24.8 medium green, still green rather than yellow.
+    r25, g25, b25, a25 = _rgba(pal, 24.8)
+    assert a25 == 255 and g25 > 150 and r25 < 80 and b25 < 90 and g25 > r25 + 80
+    # 31.7 strong green with yellow arriving (R has climbed, G still leads).
+    r32, g32, b32, _a32 = _rgba(pal, 31.7)
+    assert g32 > 180 and r32 > 100 and g32 > r32 and b32 < 80
+    # 39.7 is the yellow→orange transition, not full orange and not cyan.
+    r40, g40, b40, a40 = _rgba(pal, 39.7)
+    assert a40 == 255 and r40 > 220 and g40 > 170 and b40 < 40
+    # 48.3 orange, 56.4 red, 64.7 magenta/pink (B overtakes G, R stays high).
+    r48, g48, b48, _ = _rgba(pal, 48.3)
+    assert r48 > 220 and 80 < g48 < 160 and b48 < 40
+    r56, g56, b56, _ = _rgba(pal, 56.4)
+    assert r56 > 200 and g56 < 40 and b56 < 40
+    r65, g65, b65, a65 = _rgba(pal, 64.7)
+    assert a65 == 255 and r65 > 200 and b65 > 150 and g65 < 80 and b65 > g65
+    # Valid low dBZ stays a green wisp. Below the display floor is clear.
+    r5, g5, b5, a5 = _rgba(pal, 5.0)
+    assert 0 < a5 < 255 and g5 > r5 and g5 > b5
+    rm, gm, bm, am = _rgba(pal, -5.0)
+    assert 0 < am < a2 and gm > rm and gm > bm and gm < 140
     for dbz in np.linspace(-32.0, 75.0, 216):
         r, g, b, a = _rgba(pal, float(dbz))
         assert a > 0
         assert not (r < 90 and g > 140 and b > 140), (dbz, r, g, b)
-    r, g, b, a = _rgba(pal, -5.0)
-    assert 100 < a < 220
-    assert g > r and g > b and g < 140

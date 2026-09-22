@@ -212,6 +212,7 @@ class R2Publisher:
         modes: Sequence[str],
         product_id: str = DEFAULT_PRODUCT_ID,
         include_manifest: bool = True,
+        include_latest: bool = True,
     ) -> UploadStats:
         """Upload this cook's new frame + latest pointers + manifest.
 
@@ -222,10 +223,17 @@ class R2Publisher:
         Pass include_manifest=False when the caller will merge manifest.json
         under a file lock and PUT it afterwards. That keeps a parallel cook
         from uploading a snapshot that dropped the other product.
+
+        Pass include_latest=False when this frame is older than the on-disk
+        ``latest`` alias (RALA backfill). The historical frame is still
+        uploaded; the live alias is left on the newer scan.
         """
         groups, skipped = classify_radar_files(
             local_root, frame_id, modes, product_id=product_id
         )
+        if not include_latest:
+            skipped += len(groups["latest"])
+            groups["latest"] = []
         phases = [
             ("frame", groups["frame"]),
             ("root", groups["root"]),

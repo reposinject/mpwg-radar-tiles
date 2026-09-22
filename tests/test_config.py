@@ -59,6 +59,24 @@ def test_load_config_product_rala_ignores_leftover_composite_url(monkeypatch):
     assert cfg.palette_id == "mpwg-rala-2026-09"
 
 
+def test_rala_retention_ignores_shared_frame_cap(monkeypatch):
+    monkeypatch.setenv("MPWG_PRODUCT", "rala")
+    monkeypatch.setenv("MPWG_RETENTION_FRAMES", "5")
+    cfg = load_config()
+    assert cfg.retention_frames == 5
+    assert cfg.rala_retention_frames == 60
+    assert cfg.rala_retention_minutes == 75
+    assert cfg.rala_catchup_budget_seconds == 1500
+    monkeypatch.setenv("MPWG_RALA_RETENTION_FRAMES", "48")
+    monkeypatch.setenv("MPWG_RALA_RETENTION_MINUTES", "90")
+    monkeypatch.setenv("MPWG_RALA_CATCHUP_BUDGET_SECONDS", "600")
+    tuned = load_config()
+    assert tuned.rala_retention_frames == 48
+    assert tuned.rala_retention_minutes == 90
+    assert tuned.rala_catchup_budget_seconds == 600
+    assert tuned.retention_frames == 5
+
+
 def test_cooker_config_product_rala_syncs_endpoints():
     cfg = CookerConfig(product_id="rala")
     assert "ReflectivityAtLowestAltitude" in cfg.mrms_latest_url

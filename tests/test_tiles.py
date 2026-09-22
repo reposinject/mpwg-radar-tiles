@@ -65,3 +65,28 @@ def test_write_tiles_skips_empty_conus_windows(tmp_path: Path):
     assert stats["written"] >= 1
     assert stats["skipped_empty"] + stats["written"] == candidates
     assert stats["written"] < 40
+
+
+def test_parallel_tile_workers_match_serial_pixels(tmp_path: Path):
+    frame = apply_mode(synthetic_central_texas(), "clean")
+    pal = load_palette()
+    serial = tmp_path / "serial"
+    parallel = tmp_path / "parallel"
+    kwargs = dict(
+        bbox=CENTRAL_TEXAS,
+        min_zoom=6,
+        max_zoom=6,
+        tile_size=512,
+        skip_empty=True,
+    )
+    one = write_tiles(frame, pal, serial, workers=1, **kwargs)
+    two = write_tiles(frame, pal, parallel, workers=2, **kwargs)
+    assert one["written"] == two["written"]
+    assert one["written"] >= 1
+    serial_pngs = sorted(p.relative_to(serial).as_posix() for p in serial.rglob("*.png"))
+    parallel_pngs = sorted(p.relative_to(parallel).as_posix() for p in parallel.rglob("*.png"))
+    assert serial_pngs == parallel_pngs
+    for rel in serial_pngs:
+        with Image.open(serial / rel) as left, Image.open(parallel / rel) as right:
+            assert left.size == right.size == (512, 512)
+            np.testing.assert_array_equal(np.array(left), np.array(right))

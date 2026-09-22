@@ -5,6 +5,7 @@ from __future__ import annotations
 import fcntl
 import json
 import logging
+import os
 import shutil
 import time
 from contextlib import contextmanager
@@ -526,6 +527,7 @@ def _write_mode(
         tile_size=cfg.tile_size,
         skip_empty=cfg.skip_empty_tiles,
         sample_mode=product.sample_mode,
+        workers=max(1, int(cfg.tile_workers)),
     )
     meta = {
         "id": frame.frame_id,
@@ -572,14 +574,39 @@ def _write_mode(
     # Backfill of an older scan must not point `latest` backward.
     promoted = current is None or frame.frame_id >= current
     if promoted:
-        if latest_dir.exists():
-            shutil.rmtree(latest_dir)
-        shutil.copytree(frame_dir, latest_dir)
+        _alias_frame_tree(frame_dir, latest_dir)
         latest_meta = dict(meta)
         latest_meta["tile_url_template"] = product.tile_url_template(mode, "latest")
         latest_meta["alias"] = "latest"
         (latest_dir / "frame.json").write_text(json.dumps(latest_meta, indent=2) + "\n")
     return meta, promoted
+
+
+def _alias_frame_tree(src: Path, dest: Path) -> None:
+    """Publish ``latest/`` without copying every PNG.
+
+    A CONUS frame is hundreds of tiles. ``shutil.copytree`` doubled that
+    write before upload, and the RALA path then CopyObject's the same bytes
+    on R2. Hardlink the PNGs (frame.json stays a real file so the alias
+    metadata cannot rewrite the archived frame). Fall back to a copy when
+    the filesystem refuses the link.
+    """
+    if dest.exists():
+        shutil.rmtree(dest)
+    for path in src.rglob("*"):
+        rel = path.relative_to(src)
+        target = dest / rel
+        if path.is_dir():
+            target.mkdir(parents=True, exist_ok=True)
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if path.suffix == ".png":
+            try:
+                os.link(path, target)
+                continue
+            except OSError:
+                pass
+        shutil.copy2(path, target)
 
 
 def _write_manifest(
@@ -863,6 +890,21 @@ def _load_ncep_latest_frame(cfg: CookerConfig) -> Optional[ReflectivityFrame]:
         return None
 
 
+def _union_scans(previous: List[MrmsScan], fresh: List[MrmsScan]) -> List[MrmsScan]:
+    """Keep every real key. A short or empty re-list must not erase the window.
+
+    The catch-up re-lists so a scan published mid-run joins the queue.
+    Replacing the queue with an empty response would cook one GRIB and
+    return, which is the same 10-minute step as a latest-only cooker.
+    """
+    merged: Dict[datetime, MrmsScan] = {scan.valid_time: scan for scan in previous}
+    for scan in fresh:
+        merged[scan.valid_time] = scan
+    scans = list(merged.values())
+    scans.sort(key=lambda scan: scan.valid_time, reverse=True)
+    return scans
+
+
 def _archive_jobs(
     scans: List[MrmsScan],
     ncep: Optional[ReflectivityFrame],
@@ -995,11 +1037,19 @@ def _cook_rala_archive(cfg: CookerConfig, upload: Optional[bool]) -> Dict:
             )
             break
         try:
-            current_scans = list_recent_s3_scans(cfg, max_age=max_age)
+            fresh = list_recent_s3_scans(cfg, max_age=max_age)
         except Exception as exc:  # noqa: BLE001 — keep cooking the window we have
             log.warning(
                 "RALA archive re-list failed (%s); using the previous window",
                 exc,
+            )
+            fresh = []
+        if fresh:
+            current_scans = _union_scans(current_scans, fresh)
+        elif current_scans:
+            log.info(
+                "RALA archive re-list returned no keys; keeping %d scan(s) already listed",
+                len(current_scans),
             )
         window_jobs = _archive_jobs(current_scans, ncep, policy, _now())
         pending = [

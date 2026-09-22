@@ -31,9 +31,23 @@ def _directives(text: str) -> list[str]:
 def test_rala_timeout_covers_archive_catchup_without_raising_composite():
     rala = _text("mpwg-radar-cooker-rala.service")
     composite = _text("mpwg-radar-cooker.service")
-    assert "TimeoutStartSec=4200" in rala
-    assert "Environment=MPWG_RALA_UPLOAD_CONCURRENCY=8" in _directives(rala)
-    assert "TimeoutStartSec=1800" in composite
+    rala_directives = _directives(rala)
+    assert "TimeoutStartSec=4200" in rala_directives
+    assert "Environment=MPWG_RALA_UPLOAD_CONCURRENCY=8" in rala_directives
+    assert "Environment=MPWG_TILE_WORKERS=2" in rala_directives
+    assert "Environment=MPWG_KEEP_DBZ=0" in rala_directives
+    assert "TimeoutStartSec=1800" in _directives(composite)
+    assert "TimeoutStartSec=4200" not in _directives(composite)
+    dropin = _directives(
+        _text("mpwg-radar-cooker-rala.service.d/zz-catchup-timeout.conf")
+    )
+    assert "TimeoutStartSec=4200" in dropin
+    assert "TimeoutStartSec=1800" not in dropin
+    setup = (ROOT / "deploy" / "ec2-setup.sh").read_text(encoding="utf-8")
+    assert "zz-catchup-timeout.conf" in setup
+    assert "mpwg-radar-cooker-rala.service.d" in setup
+    assert "TimeoutStartSec=1800" in setup
+    assert "mpwg-radar-cooker.service.d" not in setup
 
 
 def test_rala_service_does_not_conflict_with_composite():

@@ -114,12 +114,17 @@ def test_rala_upload_concurrency_ignores_shared_cap(monkeypatch):
     monkeypatch.delenv("MPWG_RALA_UPLOAD_CONCURRENCY", raising=False)
     cfg = load_config()
     assert cfg.r2.upload_concurrency == 8
+    assert cfg.tile_workers == 2
     monkeypatch.setenv("MPWG_RALA_UPLOAD_CONCURRENCY", "4")
+    monkeypatch.setenv("MPWG_TILE_WORKERS", "1")
     tuned = load_config()
     assert tuned.r2.upload_concurrency == 4
+    assert tuned.tile_workers == 1
     monkeypatch.setenv("MPWG_PRODUCT", "composite")
+    monkeypatch.delenv("MPWG_TILE_WORKERS", raising=False)
     composite = load_config()
     assert composite.r2.upload_concurrency == 2
+    assert composite.tile_workers == 1
 
 
 def test_load_config_upload_timeouts(monkeypatch):

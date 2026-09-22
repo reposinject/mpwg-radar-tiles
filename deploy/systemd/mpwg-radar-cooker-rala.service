@@ -22,6 +22,13 @@ EnvironmentFile=-/etc/mpwg-radar.env
 # MPWG_RALA_UPLOAD_CONCURRENCY is set; pin 8 here anyway.
 Environment=MPWG_PRODUCT=rala
 Environment=MPWG_RALA_UPLOAD_CONCURRENCY=8
+# Two tile threads match this host's 2 vCPUs. A shared MPWG_TILE_WORKERS=1
+# in the env file must not serialize the masked-splat pass.
+Environment=MPWG_TILE_WORKERS=2
+# Physical npz crops are not the public archive. Compressing one per scan
+# during a 30-frame catch-up blows the disk and the 1536M cap. Composite
+# still follows MPWG_KEEP_DBZ in the env file.
+Environment=MPWG_KEEP_DBZ=0
 ExecStart=/bin/bash -c 'unset MRMS_LATEST_URL MRMS_S3_PREFIX; exec /opt/mpwg-radar/.venv/bin/mpwg-radar cook --product rala'
 Nice=14
 CPUWeight=60
@@ -32,6 +39,10 @@ IOSchedulingPriority=7
 # cook was running (S3 catch-up). MPWG_RALA_CATCHUP_BUDGET_SECONDS defaults
 # to 2700s of new frames, and MPWG_UPLOAD_TIMEOUT allows 900s for the last
 # upload. 4200s covers that without SIGTERM mid-PUT. Composite stays at 1800s.
+# A host drop-in of TimeoutStartSec=1800 (the composite cap) overrides this
+# line. deploy/systemd/mpwg-radar-cooker-rala.service.d/zz-catchup-timeout.conf
+# sorts after override.conf and ec2-setup.sh installs it. Do not add another
+# drop-in that sets 1800.
 # MemoryMax matches composite; if the 2 GB host is exhausted the OOM score
 # above kills this unit before the composite one.
 MemoryMax=1536M

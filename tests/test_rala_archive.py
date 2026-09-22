@@ -277,6 +277,11 @@ def test_rala_archive_cooks_every_listed_scan_newest_first(tmp_path: Path, monke
         assert item["valid_time"].startswith(when.strftime("%Y-%m-%dT%H:%M:%S"))
     latest = json.loads((mode_dir / "latest" / "frame.json").read_text())
     assert latest["id"] == frame_id_for(times[0])
+    frame_pngs = list((mode_dir / frame_id_for(times[0])).rglob("*.png"))
+    assert frame_pngs
+    linked = mode_dir / "latest" / frame_pngs[0].relative_to(mode_dir / frame_id_for(times[0]))
+    assert linked.is_file()
+    assert linked.stat().st_ino == frame_pngs[0].stat().st_ino
     assert latest["mode_spec"]["sample"] == "masked-splat"
     assert latest["mode_spec"]["despeckle"] is False
     assert latest["palette"]["version"] == "2026-09-rala-p3b"
@@ -300,6 +305,145 @@ def test_rala_archive_cooks_every_listed_scan_newest_first(tmp_path: Path, monke
     refreshed = json.loads(stale_path.read_text())
     assert refreshed["palette"]["version"] == "2026-09-rala-p3b"
     assert refreshed["valid_time"].startswith(times[0].strftime("%Y-%m-%dT%H:%M:%S"))
+
+
+def test_empty_relist_does_not_drop_the_two_minute_queue(tmp_path: Path, monkeypatch):
+    """A later ListObjects that returns nothing must not stop the catch-up."""
+    now = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+    times = [now - timedelta(minutes=minutes) for minutes in (0, 2, 4, 6)]
+
+    def _key(when: datetime) -> str:
+        stamp = when.strftime("%Y%m%d-%H%M%S")
+        return (
+            "CONUS/ReflectivityAtLowestAltitude_00.50/"
+            f"{when:%Y%m%d}/MRMS_ReflectivityAtLowestAltitude_00.50_{stamp}.grib2.gz"
+        )
+
+    scans = [type("Scan", (), {"valid_time": when, "key": _key(when)})() for when in times]
+    calls = {"n": 0}
+
+    def _list(cfg, max_age, now=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return list(scans)
+        return []
+
+    monkeypatch.setattr("mpwg_radar.cooker.list_recent_s3_scans", _list)
+    monkeypatch.setattr("mpwg_radar.cooker._load_ncep_latest_frame", lambda cfg: None)
+
+    def _download(cfg, key, dest):
+        dest.mkdir(parents=True, exist_ok=True)
+        path = dest / Path(key).name
+        path.write_bytes(b"grib")
+        return path
+
+    monkeypatch.setattr("mpwg_radar.cooker.download_s3_key", _download)
+    decoded = []
+
+    def fake_decode(path, bbox=None, product=None):
+        name = Path(path).name
+        when = next(item.valid_time for item in scans if item.key.endswith(name))
+        decoded.append(when)
+        return synthetic_central_texas(valid_time=when)
+
+    monkeypatch.setattr("mpwg_radar.cooker.decode_grib2", fake_decode)
+    cfg = CookerConfig(
+        bbox=CENTRAL_TEXAS,
+        region_name="central-texas",
+        modes=["clean"],
+        min_zoom=6,
+        max_zoom=6,
+        tile_size=512,
+        skip_empty_tiles=True,
+        keep_dbz=False,
+        data_dir=tmp_path / "data",
+        output_dir=tmp_path,
+        upload=False,
+        product_id="rala",
+        rala_catchup_budget_seconds=1500,
+        tile_workers=1,
+    )
+    result = cook(cfg, source="mrms", upload=False)
+    assert calls["n"] > 1
+    assert result["archive_listed"] == 4
+    assert result["archive_cooked"] == 4
+    assert result["archive_pending"] == 0
+    assert decoded == times
+    manifest = json.loads((tmp_path / "radar" / "manifest.json").read_text())
+    listed = [item["id"] for item in manifest["products"]["rala"]["modes"]["clean"]["frames"]]
+    assert listed == [frame_id_for(when) for when in times]
+
+
+def test_complete_frames_are_skipped_newest_hole_first(tmp_path: Path, monkeypatch):
+    now = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+    times = [now - timedelta(minutes=minutes) for minutes in (0, 2, 4, 6)]
+
+    def _key(when: datetime) -> str:
+        stamp = when.strftime("%Y%m%d-%H%M%S")
+        return (
+            "CONUS/ReflectivityAtLowestAltitude_00.50/"
+            f"{when:%Y%m%d}/MRMS_ReflectivityAtLowestAltitude_00.50_{stamp}.grib2.gz"
+        )
+
+    scans = [type("Scan", (), {"valid_time": when, "key": _key(when)})() for when in times]
+    monkeypatch.setattr(
+        "mpwg_radar.cooker.list_recent_s3_scans",
+        lambda cfg, max_age, now=None: list(scans),
+    )
+    monkeypatch.setattr("mpwg_radar.cooker._load_ncep_latest_frame", lambda cfg: None)
+
+    def _download(cfg, key, dest):
+        dest.mkdir(parents=True, exist_ok=True)
+        path = dest / Path(key).name
+        path.write_bytes(b"grib")
+        return path
+
+    monkeypatch.setattr("mpwg_radar.cooker.download_s3_key", _download)
+    decoded = []
+
+    def fake_decode(path, bbox=None, product=None):
+        name = Path(path).name
+        when = next(item.valid_time for item in scans if item.key.endswith(name))
+        decoded.append(when)
+        return synthetic_central_texas(valid_time=when)
+
+    monkeypatch.setattr("mpwg_radar.cooker.decode_grib2", fake_decode)
+    # The scan 4 minutes back is already on disk with the live palette.
+    # It must not be decoded again. The newer hole is cooked first.
+    held = times[2]
+    mode_dir = tmp_path / "radar" / "rala" / "clean"
+    held_id = _seed_frame(mode_dir, held)
+    meta_path = mode_dir / held_id / "frame.json"
+    meta = json.loads(meta_path.read_text())
+    meta["palette"] = {"version": "2026-09-rala-p3b"}
+    meta_path.write_text(json.dumps(meta))
+    cfg = CookerConfig(
+        bbox=CENTRAL_TEXAS,
+        region_name="central-texas",
+        modes=["clean"],
+        min_zoom=6,
+        max_zoom=6,
+        tile_size=512,
+        skip_empty_tiles=True,
+        keep_dbz=False,
+        data_dir=tmp_path / "data",
+        output_dir=tmp_path,
+        upload=False,
+        product_id="rala",
+        palette_id="mpwg-rala-2026-09",
+        rala_catchup_budget_seconds=0,
+        tile_workers=1,
+    )
+    first = cook(cfg, source="mrms", upload=False)
+    assert first["archive_cooked"] == 1
+    assert first["frame_id"] == frame_id_for(times[0])
+    assert decoded == [times[0]]
+    cfg.rala_catchup_budget_seconds = 1500
+    second = cook(cfg, source="mrms", upload=False)
+    assert held not in decoded
+    assert decoded == [times[0], times[1], times[3]]
+    assert second["archive_cooked"] == 2
+    assert second["archive_pending"] == 0
 
 
 def test_composite_cook_does_not_list_the_rala_archive(tmp_path: Path, monkeypatch):
@@ -366,3 +510,54 @@ def test_list_recent_s3_scans_paginates_and_drops_old_files(monkeypatch):
     assert [scan.key for scan in scans] == [keep_b, keep_a]
     assert any("continuation-token=" in url for url in calls)
     assert any("next%2Fpage%2B1" in url for url in calls)
+
+
+def test_list_recent_s3_scans_keeps_every_two_minute_key(monkeypatch):
+    """Intermediate 2-minute objects on a later page are part of the window."""
+    now = datetime(2026, 9, 22, 16, 0, tzinfo=timezone.utc)
+    day = "20260922"
+    prefix = "CONUS/ReflectivityAtLowestAltitude_00.50"
+    stamps = [
+        (now - timedelta(minutes=minutes)).strftime("%Y%m%d-%H%M%S")
+        for minutes in range(0, 16, 2)
+    ]
+    # 0,2,4,6,8,10,12,14 → 8 real scans. Lex order is oldest first, so the
+    # first page is the back of the hour and the tip is on the next page.
+    keys = [
+        f"{prefix}/{day}/MRMS_ReflectivityAtLowestAltitude_00.50_{stamp}.grib2.gz"
+        for stamp in reversed(stamps)
+    ]
+    outside = (
+        f"{prefix}/{day}/MRMS_ReflectivityAtLowestAltitude_00.50_"
+        "20260922-140000.grib2.gz"
+    )
+
+    def listing(page_keys, truncated=False, token=None) -> bytes:
+        contents = "".join(f"<Contents><Key>{key}</Key></Contents>" for key in page_keys)
+        token_xml = f"<NextContinuationToken>{token}</NextContinuationToken>" if token else ""
+        trunc = "true" if truncated else "false"
+        return (
+            '<?xml version="1.0"?>'
+            '<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">'
+            f"<IsTruncated>{trunc}</IsTruncated>{token_xml}{contents}"
+            "</ListBucketResult>"
+        ).encode()
+
+    def fake_request(url, timeout, user_agent):
+        if "20260921" in url:
+            return listing([])
+        if "continuation-token" not in url:
+            return listing([outside, keys[0], keys[1]], truncated=True, token="page-2")
+        return listing(keys[2:])
+
+    monkeypatch.setattr("mpwg_radar.ingest._request", fake_request)
+    cfg = CookerConfig(product_id="rala")
+    scans = list_recent_s3_scans(cfg, max_age=timedelta(minutes=75), now=now)
+    assert len(scans) == 8
+    assert outside not in [scan.key for scan in scans]
+    got = [scan.valid_time for scan in scans]
+    assert got == sorted(got, reverse=True)
+    gaps = [(got[i] - got[i + 1]).total_seconds() for i in range(len(got) - 1)]
+    assert gaps == [120.0] * (len(got) - 1)
+    assert scans[0].valid_time == now
+    assert scans[-1].valid_time == now - timedelta(minutes=14)

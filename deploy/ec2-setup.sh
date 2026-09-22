@@ -74,12 +74,31 @@ install -m 644 "$APP_ROOT/deploy/systemd/mpwg-radar-cooker.timer" /etc/systemd/s
 install -m 644 "$APP_ROOT/deploy/systemd/mpwg-radar-cooker-rala.service" /etc/systemd/system/
 install -m 644 "$APP_ROOT/deploy/systemd/mpwg-radar-cooker-rala.timer" /etc/systemd/system/
 
+# A leftover drop-in of TimeoutStartSec=1800 overrides the unit's 4200 and
+# kills a multi-frame RALA catch-up mid-upload. Rewrite those lines, then
+# install zz-catchup-timeout.conf so it sorts after override.conf.
+RALA_DROPIN_DIR=/etc/systemd/system/mpwg-radar-cooker-rala.service.d
+install -d -m 755 "$RALA_DROPIN_DIR"
+shopt -s nullglob
+for dropin in "$RALA_DROPIN_DIR"/*.conf; do
+  if grep -qE '^[[:space:]]*TimeoutStartSec=1800[[:space:]]*$' "$dropin"; then
+    sed -i -E 's/^[[:space:]]*TimeoutStartSec=1800[[:space:]]*$/TimeoutStartSec=4200/' "$dropin"
+    echo "==> Raised RALA TimeoutStartSec to 4200 in $dropin"
+  fi
+done
+shopt -u nullglob
+install -m 644 \
+  "$APP_ROOT/deploy/systemd/mpwg-radar-cooker-rala.service.d/zz-catchup-timeout.conf" \
+  "$RALA_DROPIN_DIR/zz-catchup-timeout.conf"
+
 chown -R "$APP_USER:$APP_USER" "$APP_ROOT" "$DATA_ROOT" /var/log/mpwg-radar
 chown root:root \
   /etc/systemd/system/mpwg-radar-cooker.service \
   /etc/systemd/system/mpwg-radar-cooker.timer \
   /etc/systemd/system/mpwg-radar-cooker-rala.service \
-  /etc/systemd/system/mpwg-radar-cooker-rala.timer
+  /etc/systemd/system/mpwg-radar-cooker-rala.timer \
+  "$RALA_DROPIN_DIR" \
+  "$RALA_DROPIN_DIR/zz-catchup-timeout.conf"
 chown root:"$APP_USER" "$ENV_FILE"
 
 systemctl daemon-reload

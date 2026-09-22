@@ -95,6 +95,9 @@ class CookerConfig:
     max_zoom: int = CONUS_MAX_ZOOM
     tile_size: int = 512
     skip_empty_tiles: bool = True
+    # 1 keeps composite serial. load_config raises RALA to 2 (t4g.small has
+    # two vCPUs). The frame grid is shared read-only across workers.
+    tile_workers: int = 1
     keep_dbz: bool = True
     data_dir: Path = Path("./data")
     output_dir: Path = Path("./output")
@@ -135,6 +138,8 @@ class CookerConfig:
             raise ValueError("Invalid bbox (need west < east and south < north)")
         if self.min_zoom < 0 or self.max_zoom > 14 or self.min_zoom > self.max_zoom:
             raise ValueError("Invalid zoom range")
+        if self.tile_workers < 1:
+            raise ValueError("tile_workers must be >= 1")
         if self.tile_size != 512:
             # Supported for experiments, but production contract is 512.
             if self.tile_size < 256 or self.tile_size > 1024:
@@ -209,6 +214,7 @@ def load_config(overrides: Optional[dict] = None) -> CookerConfig:
         max_zoom=int(os.environ.get("MPWG_MAX_ZOOM", str(CONUS_MAX_ZOOM))),
         tile_size=int(os.environ.get("MPWG_TILE_SIZE", "512")),
         skip_empty_tiles=_truthy(os.environ.get("MPWG_SKIP_EMPTY_TILES"), True),
+        tile_workers=_tile_workers(product_id),
         keep_dbz=_truthy(os.environ.get("MPWG_KEEP_DBZ"), True),
         data_dir=Path(os.environ.get("MPWG_DATA_DIR", "./data")),
         output_dir=Path(os.environ.get("MPWG_OUTPUT_DIR", "./output")),
@@ -270,8 +276,25 @@ def load_config(overrides: Optional[dict] = None) -> CookerConfig:
     # at ~4 objects/s a CONUS frame cannot keep a 2-minute scan (~5 frames/hour).
     if not overrides or "r2" not in overrides:
         cfg.r2.upload_concurrency = _upload_concurrency(cfg.product_id)
+    if not overrides or "tile_workers" not in overrides:
+        cfg.tile_workers = _tile_workers(cfg.product_id)
     cfg.validate()
     return cfg
+
+
+def _tile_workers(product_id: str) -> int:
+    """RALA masked-splat defaults to 2 threads. Composite stays at 1.
+
+    ``MPWG_TILE_WORKERS`` overrides both. Two workers match t4g.small
+    (2 vCPU) without a second copy of the CONUS grid. More than that on a
+    2 GB host risks the 1536M cap while composite is also cooking.
+    """
+    raw = os.environ.get("MPWG_TILE_WORKERS")
+    if raw is not None and str(raw).strip():
+        return max(1, int(raw))
+    if product_id == "rala":
+        return 2
+    return 1
 
 
 def _upload_concurrency(product_id: str) -> int:

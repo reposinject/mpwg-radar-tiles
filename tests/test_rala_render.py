@@ -276,3 +276,61 @@ def test_rala_tile_footprint_matches_nearest_and_interior_is_smoother():
     # Alternating 20/45 cells are two flat colors nearest, a gradient when blended.
     assert unique_opaque(near_px) <= 4
     assert unique_opaque(smooth_px) >= 10
+
+
+def test_splat_echo_only_matches_the_contour_on_a_fixed_block():
+    """Echo-only evaluation must keep the same contour, not a cheaper look."""
+    lat = np.linspace(30.05, 29.96, 10)
+    lon = np.linspace(-98.05, -97.96, 10)
+    dbz = np.full((10, 10), np.nan, dtype=np.float32)
+    cat = np.full(dbz.shape, CAT_NO_ECHO, dtype=np.uint8)
+    cat[3:7, 3:7] = CAT_VALID
+    dbz[3:7, 3:7] = np.array(
+        [
+            [12, 18, 22, 40],
+            [15, 55, 62, 28],
+            [9, 48, 33, 21],
+            [11, 16, 19, 14],
+        ],
+        np.float32,
+    )
+    qlat = np.linspace(30.02, 29.98, 5)
+    qlon = np.linspace(-98.02, -97.98, 5)
+    qlon_g, qlat_g = np.meshgrid(qlon, qlat)
+    got_dbz, got_cat, got_edge = sample_masked_splat(dbz, lat, lon, qlat_g, qlon_g, cat)
+    expect_dbz = np.array(
+        [
+            [25.10894, 29.479212, 32.545193, 37.683018, np.nan],
+            [26.069216, 50.063465, 56.126213, 32.582172, np.nan],
+            [24.843527, 44.108112, 30.947645, 29.360752, np.nan],
+            [22.06555, 24.995136, 26.06538, 25.183, np.nan],
+            [np.nan, np.nan, np.nan, np.nan, np.nan],
+        ],
+        dtype=np.float32,
+    )
+    expect_edge = np.array(
+        [
+            [0.413506, 0.037147, 0.037147, 0.413506, 0.0],
+            [0.037147, 0.830341, 0.83034, 0.037147, 0.0],
+            [0.037147, 0.830341, 0.830341, 0.037147, 0.0],
+            [0.413506, 0.037147, 0.037147, 0.413506, 0.0],
+            [0.0, 0.0, 0.0, 0.0, 0.0],
+        ],
+        dtype=np.float32,
+    )
+    expect_cat = np.array(
+        [
+            [1, 1, 1, 1, 2],
+            [1, 1, 1, 1, 2],
+            [1, 1, 1, 1, 2],
+            [1, 1, 1, 1, 2],
+            [2, 2, 2, 2, 2],
+        ],
+        dtype=np.uint8,
+    )
+    np.testing.assert_allclose(got_dbz, expect_dbz, atol=1e-3, equal_nan=True)
+    np.testing.assert_allclose(got_edge, expect_edge, atol=1e-3)
+    np.testing.assert_array_equal(got_cat, expect_cat)
+    # The clear column stays empty. The footprint did not grow.
+    assert np.all(np.isnan(got_dbz[:, 4]))
+    assert np.all(got_edge[:, 4] == 0)

@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import json
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 from PIL import Image
 
-from mpwg_radar.geo import BBox, iter_tiles, tile_bounds, tile_pixel_centers
+from mpwg_radar.geo import BBox, iter_tiles, tile_bounds
 from mpwg_radar.grib import ReflectivityFrame
 from mpwg_radar.palette import Palette
 from mpwg_radar.products import (
@@ -210,6 +211,121 @@ _CORE_RISE = np.float32(8.0)
 _SPLAT_RADIUS = 4
 
 
+def _splat_echo(
+    src: np.ndarray,
+    cat: np.ndarray,
+    j_f: np.ndarray,
+    i_f: np.ndarray,
+    j_n: np.ndarray,
+    i_n: np.ndarray,
+    echo: np.ndarray,
+    radius: int,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Masked-splat dBZ and edge scale for echo pixels only.
+
+    The weights are the same 9×9 grid-index Gaussians as a full-tile pass:
+    nearest cell is the footprint, taps outside the mosaic count as clear
+    air, and a clear-air pixel is never written. Clear pixels are skipped
+    instead of allocating a 512×512 temporary on every kernel tap — that
+    full-tile loop was most of a ~10 minute CONUS cook.
+    """
+    out_dbz = np.full(echo.shape, np.nan, dtype=np.float32)
+    edge_scale = np.zeros(echo.shape, dtype=np.float32)
+    ys, xs = np.nonzero(echo)
+    if ys.size == 0:
+        return out_dbz, edge_scale
+
+    inv_occ = np.float32(1.0 / (2.0 * _OCC_SIGMA * _OCC_SIGMA))
+    inv_disc = np.float32(1.0 / (2.0 * _DISC_SIGMA * _DISC_SIGMA))
+    inv_color = np.float32(1.0 / (2.0 * _COLOR_SIGMA * _COLOR_SIGMA))
+    inv_peak = np.float32(1.0 / (2.0 * _PEAK_SIGMA * _PEAK_SIGMA))
+
+    jn = j_n[ys, xs].astype(np.int32, copy=False)
+    inn = i_n[ys, xs].astype(np.int32, copy=False)
+    # Neighbor gathers stay inside the tile's window. The full CONUS grid
+    # is a view here, not a copy.
+    j0 = max(0, int(jn.min()) - radius)
+    j1 = min(int(src.shape[0]), int(jn.max()) + radius + 1)
+    i0 = max(0, int(inn.min()) - radius)
+    i1 = min(int(src.shape[1]), int(inn.max()) + radius + 1)
+    src_c = np.asarray(src, dtype=np.float32)[j0:j1, i0:i1]
+    cat_c = cat[j0:j1, i0:i1]
+    ny, nx = src_c.shape
+    jn = jn - np.int32(j0)
+    inn = inn - np.int32(i0)
+    j_f_e = j_f[ys, xs] - j0
+    i_f_e = i_f[ys, xs] - i0
+    n = int(ys.size)
+
+    mass_echo = np.zeros(n, dtype=np.float32)
+    mass_all = np.zeros(n, dtype=np.float32)
+    disc_mass = np.zeros(n, dtype=np.float32)
+    num = np.zeros(n, dtype=np.float32)
+    den = np.zeros(n, dtype=np.float32)
+    offs = np.arange(-radius, radius + 1, dtype=np.float64)
+    # dj = j_f - (j_n + dy), matching the full-tile cast to float32.
+    dj = (j_f_e[None, :] - (jn.astype(np.float64)[None, :] + offs[:, None])).astype(
+        np.float32
+    )
+    di = (i_f_e[None, :] - (inn.astype(np.float64)[None, :] + offs[:, None])).astype(
+        np.float32
+    )
+    d2_j = dj * dj
+    d2_i = di * di
+    wy_o = np.exp(-d2_j * inv_occ).astype(np.float32)
+    wy_d = np.exp(-d2_j * inv_disc).astype(np.float32)
+    wy_c = np.exp(-d2_j * inv_color).astype(np.float32)
+    wx_o = np.exp(-d2_i * inv_occ).astype(np.float32)
+    wx_d = np.exp(-d2_i * inv_disc).astype(np.float32)
+    wx_c = np.exp(-d2_i * inv_color).astype(np.float32)
+
+    dxs = np.arange(-radius, radius + 1, dtype=np.int32)
+    zero = np.float32(0.0)
+    for ky, dy in enumerate(range(-radius, radius + 1)):
+        jj = jn + np.int32(dy)
+        ii = inn[None, :] + dxs[:, None]
+        inside = (
+            ((jj >= 0) & (jj < ny))[None, :]
+            & (ii >= 0)
+            & (ii < nx)
+        )
+        jc = np.clip(jj, 0, ny - 1)
+        ic = np.clip(ii, 0, nx - 1)
+        vals = src_c[jc[None, :], ic]
+        good = inside & (cat_c[jc[None, :], ic] == CAT_VALID) & np.isfinite(vals)
+        wo = wy_o[ky] * wx_o
+        wd = wy_d[ky] * wx_d
+        wc = wy_c[ky] * wx_c
+        mass_all += np.sum(wo, axis=0, dtype=np.float32)
+        mass_echo += np.sum(np.where(good, wo, zero), axis=0, dtype=np.float32)
+        disc_mass += np.sum(np.where(good, wd, zero), axis=0, dtype=np.float32)
+        weighted = np.where(good, wc * vals.astype(np.float32), zero)
+        num += np.sum(weighted, axis=0, dtype=np.float32)
+        den += np.sum(np.where(good, wc, zero), axis=0, dtype=np.float32)
+
+    occ = mass_echo / np.maximum(mass_all, np.float32(1e-6))
+    blob = np.clip((occ - _OCC_LO) / (_OCC_HI - _OCC_LO), 0.0, 1.0)
+    disc = np.clip((disc_mass - _DISC_LO) / (_DISC_HI - _DISC_LO), 0.0, 1.0)
+    disc_keep = np.clip(
+        (_DISC_KEEP_HI - occ) / (_DISC_KEEP_HI - _DISC_KEEP_LO), 0.0, 1.0
+    )
+    edge_scale[ys, xs] = np.maximum(blob, disc * disc_keep).astype(np.float32)
+
+    use = den > np.float32(1e-6)
+    color = np.zeros(n, dtype=np.float32)
+    color[use] = num[use] / den[use]
+    own_d2 = dj[radius] ** 2 + di[radius] ** 2
+    own = np.exp(-own_d2 * inv_peak).astype(np.float32)
+    nearest_val = src_c[jn, inn].astype(np.float32)
+    hotter = np.clip((nearest_val - color) / _CORE_RISE, 0.0, 1.0)
+    mix = (_PEAK_MIX * own * hotter).astype(np.float32)
+    pulled = (color * (np.float32(1.0) - mix) + nearest_val * mix).astype(np.float32)
+    picked = np.full(n, np.nan, dtype=np.float32)
+    picked[use] = pulled[use]
+    out_dbz[ys, xs] = picked
+    return out_dbz, edge_scale
+
+
 def sample_masked_splat(
     dbz: np.ndarray,
     lat: np.ndarray,
@@ -252,66 +368,24 @@ def sample_masked_splat(
     if not np.any(echo):
         return out_dbz, out_cat, edge_scale
 
-    ny, nx = src.shape
-    inv_occ = np.float32(1.0 / (2.0 * _OCC_SIGMA * _OCC_SIGMA))
-    inv_disc = np.float32(1.0 / (2.0 * _DISC_SIGMA * _DISC_SIGMA))
-    inv_color = np.float32(1.0 / (2.0 * _COLOR_SIGMA * _COLOR_SIGMA))
-    inv_peak = np.float32(1.0 / (2.0 * _PEAK_SIGMA * _PEAK_SIGMA))
-    mass_echo = np.zeros(qlat_a.shape, dtype=np.float32)
-    mass_all = np.zeros(qlat_a.shape, dtype=np.float32)
-    disc_mass = np.zeros(qlat_a.shape, dtype=np.float32)
-    num = np.zeros(qlat_a.shape, dtype=np.float32)
-    den = np.zeros(qlat_a.shape, dtype=np.float32)
-    for dy in range(-radius, radius + 1):
-        for dx in range(-radius, radius + 1):
-            jj = j_n + dy
-            ii = i_n + dx
-            inside = (jj >= 0) & (jj < ny) & (ii >= 0) & (ii < nx)
-            jc = np.clip(jj, 0, ny - 1)
-            ic = np.clip(ii, 0, nx - 1)
-            dj = (j_f - jj).astype(np.float32)
-            di = (i_f - ii).astype(np.float32)
-            d2 = dj * dj + di * di
-            wo = np.exp(-d2 * inv_occ).astype(np.float32)
-            wd = np.exp(-d2 * inv_disc).astype(np.float32)
-            wc = np.exp(-d2 * inv_color).astype(np.float32)
-            # Kernel taps past the grid count as clear air, so the mosaic
-            # edge does not brighten just because the window is truncated.
-            mass_all += wo
-            vals = src[jc, ic]
-            good = inside & (cat[jc, ic] == CAT_VALID) & np.isfinite(vals)
-            mass_echo += np.where(good, wo, np.float32(0.0))
-            disc_mass += np.where(good, wd, np.float32(0.0))
-            num += np.where(good, wc * vals.astype(np.float32), np.float32(0.0))
-            den += np.where(good, wc, np.float32(0.0))
-    occ = mass_echo / np.maximum(mass_all, np.float32(1e-6))
-    blob = np.clip((occ - _OCC_LO) / (_OCC_HI - _OCC_LO), 0.0, 1.0)
-    disc = np.clip((disc_mass - _DISC_LO) / (_DISC_HI - _DISC_LO), 0.0, 1.0)
-    disc_keep = np.clip(
-        (_DISC_KEEP_HI - occ) / (_DISC_KEEP_HI - _DISC_KEEP_LO), 0.0, 1.0
+    # Kernel taps past the grid count as clear air, so the mosaic edge does
+    # not brighten just because the window is truncated. That rule lives in
+    # _splat_echo; this call does not change the footprint or the contour.
+    splat_dbz, splat_edge = _splat_echo(
+        src, cat, j_f, i_f, j_n, i_n, echo, radius
     )
-    edge_scale[echo] = np.maximum(blob, disc * disc_keep)[echo].astype(np.float32)
-
-    use = echo & (den > 1e-6)
-    color = np.zeros(qlat_a.shape, dtype=np.float32)
-    color[use] = num[use] / den[use]
-    own_d2 = (j_f - j_n).astype(np.float32) ** 2 + (i_f - i_n).astype(np.float32) ** 2
-    own = np.exp(-own_d2 * inv_peak).astype(np.float32)
-    jc = np.clip(j_n, 0, ny - 1)
-    ic = np.clip(i_n, 0, nx - 1)
-    nearest_val = src[jc, ic].astype(np.float32)
-    hotter = np.clip((nearest_val - color) / _CORE_RISE, 0.0, 1.0)
-    mix = _PEAK_MIX * own * hotter
-    pulled = color * (1.0 - mix) + nearest_val * mix
-    out_dbz[use] = pulled[use].astype(np.float32)
+    out_dbz[echo] = splat_dbz[echo]
+    edge_scale[echo] = splat_edge[echo]
     return out_dbz, out_cat, edge_scale
 
 
 def _query_lonlat(z: int, x: int, y: int, tile_size: int):
-    xs, ys = tile_pixel_centers(z, x, y, tile_size)
-    gx = np.array(xs, dtype=np.float64)
-    gy = np.array(ys, dtype=np.float64)
-    n = 1 << z
+    # Same pixel centers as tile_pixel_centers, without a Python loop per pixel.
+    step = 1.0 / tile_size
+    idx = np.arange(tile_size, dtype=np.float64) + 0.5
+    gx = x + idx * step
+    gy = y + idx * step
+    n = float(1 << z)
     lon = gx / n * 360.0 - 180.0
     lat_rad = np.arctan(np.sinh(np.pi * (1.0 - 2.0 * gy / n)))
     lat = np.degrees(lat_rad)
@@ -406,6 +480,12 @@ def tile_has_echo(frame: ReflectivityFrame, z: int, x: int, y: int) -> bool:
     return bool(np.any(np.isfinite(frame.dbz[rows, cols])))
 
 
+# optimize=True tries every PNG filter. On a noisy 512×512 RGBA tile that
+# was ~0.37s for a ~2% smaller file — several minutes of a CONUS frame.
+# Level 6 is the usual zlib default and stays within a few percent of that size.
+_PNG_COMPRESS_LEVEL = 6
+
+
 def write_tiles(
     frame: ReflectivityFrame,
     palette: Palette,
@@ -416,38 +496,82 @@ def write_tiles(
     tile_size: int = 512,
     skip_empty: bool = True,
     sample_mode: str = SAMPLE_NEAREST,
+    workers: int = 1,
 ) -> Dict:
-    """Write `{z}/{x}/{y}.png` under out_dir. Returns tile stats."""
+    """Write `{z}/{x}/{y}.png` under out_dir. Returns tile stats.
+
+    ``workers`` > 1 renders echo tiles on a thread pool. Numpy releases the
+    GIL inside the splat, so two workers fit a 2 vCPU host. The frame grid
+    is read-only and is not copied per worker.
+    """
     out_dir.mkdir(parents=True, exist_ok=True)
-    written = 0
     skipped = 0
-    paths: List[str] = []
+    jobs: List[Tuple[int, int, int]] = []
+    # An empty parent tile has no echo in any child. Mark it and skip the
+    # descendants instead of scanning each of them.
+    empty_parents: set[Tuple[int, int, int]] = set()
     for z, x, y in iter_tiles(bbox, min_zoom, max_zoom):
-        if skip_empty and not tile_has_echo(frame, z, x, y):
-            skipped += 1
-            continue
+        if skip_empty:
+            parent = (z - 1, x // 2, y // 2)
+            if z > min_zoom and parent in empty_parents:
+                skipped += 1
+                continue
+            if not tile_has_echo(frame, z, x, y):
+                empty_parents.add((z, x, y))
+                skipped += 1
+                continue
+        jobs.append((z, x, y))
+
+    def _one(item: Tuple[int, int, int]) -> Optional[str]:
+        z, x, y = item
         image, has_echo = render_tile(
             frame, palette, z, x, y, tile_size, sample_mode=sample_mode
         )
         if skip_empty and not has_echo:
-            skipped += 1
-            continue
+            return None
         dest = out_dir / str(z) / str(x) / f"{y}.png"
         dest.parent.mkdir(parents=True, exist_ok=True)
-        image.save(dest, format="PNG", optimize=True)
-        written += 1
-        paths.append(f"{z}/{x}/{y}.png")
+        image.save(
+            dest,
+            format="PNG",
+            optimize=False,
+            compress_level=_PNG_COMPRESS_LEVEL,
+        )
+        return f"{z}/{x}/{y}.png"
+
+    paths: List[str] = []
+    worker_n = max(1, int(workers))
+    if worker_n == 1 or len(jobs) <= 1:
+        rendered = (_one(item) for item in jobs)
+    else:
+        pool = ThreadPoolExecutor(
+            max_workers=min(worker_n, len(jobs)),
+            thread_name_prefix="rala-tile",
+        )
+        rendered = pool.map(_one, jobs)
+    try:
+        for rel in rendered:
+            if rel is None:
+                skipped += 1
+            else:
+                paths.append(rel)
+    finally:
+        if worker_n > 1 and len(jobs) > 1:
+            pool.shutdown(wait=True)
+    written = len(paths)
     stats = {
         "written": written,
         "skipped_empty": skipped,
         "tile_size": tile_size,
         "min_zoom": min_zoom,
         "max_zoom": max_zoom,
+        "workers": worker_n if len(jobs) > 1 else 1,
     }
     log.info(
-        "Wrote %d tiles (%d empty skipped) → %s",
+        "Wrote %d tiles (%d empty skipped, workers=%d) → %s",
         written,
         skipped,
+        stats["workers"],
         out_dir,
     )
     return stats

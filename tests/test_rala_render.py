@@ -63,9 +63,10 @@ def test_clear_air_next_to_strong_echo_stays_empty_and_edge_does_not_fade():
     assert tuple(int(c) for c in rgba[0, 0]) == (0, 0, 0, 0)
     painted = pal.colorize(center, category=center_cat)
     assert painted[0, 0, 3] == 255
-    # High cores are saturated magenta, not the dark-red plateau.
-    hot = pal.colorize(np.array([[70.0]], dtype=np.float32))[0, 0]
-    assert int(hot[0]) >= 250 and int(hot[2]) >= 220 and int(hot[1]) < 40
+    # 64.7 dBZ is the magenta/pink core, not a dark-red plateau.
+    hot = pal.colorize(np.array([[64.7]], dtype=np.float32))[0, 0]
+    assert int(hot[0]) > 200 and int(hot[2]) > 150 and int(hot[1]) < 80
+    assert int(hot[2]) > int(hot[1])
 
 
 def test_echo_neighbors_interpolate_instead_of_posterizing():

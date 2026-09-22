@@ -9,6 +9,8 @@ Requires=mpwg-radar-cooker-rala.service
 # MRMS publishes ReflectivityAtLowestAltitude about every 2 minutes (same
 # grid as composite). OnUnitActiveSec=2min tracks that. A cook longer than
 # 2 minutes delays the next shot; it does not stack a second RALA cook.
+# Scans published during a long cook are not dropped: the next run lists the
+# S3 window and cooks the real files it does not already have.
 OnBootSec=2min
 OnUnitActiveSec=2min
 AccuracySec=15s

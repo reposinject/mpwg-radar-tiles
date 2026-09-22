@@ -59,6 +59,24 @@ def test_load_config_product_rala_ignores_leftover_composite_url(monkeypatch):
     assert cfg.palette_id == "mpwg-rala-2026-09"
 
 
+def test_rala_retention_ignores_shared_frame_cap(monkeypatch):
+    monkeypatch.setenv("MPWG_PRODUCT", "rala")
+    monkeypatch.setenv("MPWG_RETENTION_FRAMES", "5")
+    cfg = load_config()
+    assert cfg.retention_frames == 5
+    assert cfg.rala_retention_frames == 60
+    assert cfg.rala_retention_minutes == 75
+    assert cfg.rala_catchup_budget_seconds == 2700
+    monkeypatch.setenv("MPWG_RALA_RETENTION_FRAMES", "48")
+    monkeypatch.setenv("MPWG_RALA_RETENTION_MINUTES", "90")
+    monkeypatch.setenv("MPWG_RALA_CATCHUP_BUDGET_SECONDS", "600")
+    tuned = load_config()
+    assert tuned.rala_retention_frames == 48
+    assert tuned.rala_retention_minutes == 90
+    assert tuned.rala_catchup_budget_seconds == 600
+    assert tuned.retention_frames == 5
+
+
 def test_cooker_config_product_rala_syncs_endpoints():
     cfg = CookerConfig(product_id="rala")
     assert "ReflectivityAtLowestAltitude" in cfg.mrms_latest_url
@@ -88,6 +106,20 @@ def test_load_config_bbox_override(monkeypatch):
 def test_unknown_region_raises():
     with pytest.raises(ValueError, match="Unknown region"):
         resolve_region_bbox("europe")
+
+
+def test_rala_upload_concurrency_ignores_shared_cap(monkeypatch):
+    monkeypatch.setenv("MPWG_PRODUCT", "rala")
+    monkeypatch.setenv("MPWG_UPLOAD_CONCURRENCY", "2")
+    monkeypatch.delenv("MPWG_RALA_UPLOAD_CONCURRENCY", raising=False)
+    cfg = load_config()
+    assert cfg.r2.upload_concurrency == 8
+    monkeypatch.setenv("MPWG_RALA_UPLOAD_CONCURRENCY", "4")
+    tuned = load_config()
+    assert tuned.r2.upload_concurrency == 4
+    monkeypatch.setenv("MPWG_PRODUCT", "composite")
+    composite = load_config()
+    assert composite.r2.upload_concurrency == 2
 
 
 def test_load_config_upload_timeouts(monkeypatch):

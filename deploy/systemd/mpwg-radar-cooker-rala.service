@@ -17,19 +17,25 @@ EnvironmentFile=-/etc/mpwg-radar.env
 # Force RALA endpoints even if /etc/mpwg-radar.env still has the composite URL.
 # MPWG_PRODUCT in the env file stays composite; this Environment= line wins
 # for this unit only and does not change the composite timer.
+# Environment= after EnvironmentFile wins, so a host MPWG_UPLOAD_CONCURRENCY=2
+# cannot throttle this unit. RALA ignores that shared knob unless
+# MPWG_RALA_UPLOAD_CONCURRENCY is set; pin 8 here anyway.
 Environment=MPWG_PRODUCT=rala
+Environment=MPWG_RALA_UPLOAD_CONCURRENCY=8
 ExecStart=/bin/bash -c 'unset MRMS_LATEST_URL MRMS_S3_PREFIX; exec /opt/mpwg-radar/.venv/bin/mpwg-radar cook --product rala'
 Nice=14
 CPUWeight=60
 OOMScoreAdjust=300
 IOSchedulingClass=best-effort
 IOSchedulingPriority=7
-# Same 1800s as the composite unit: a CONUS RALA oneshot is ~230s of upload
-# for ~866 objects, and MPWG_UPLOAD_TIMEOUT allows up to 900s. 300s killed
-# the cook before R2 finished. MemoryMax matches composite; if the 2 GB host
-# is exhausted the OOM score above kills this unit before the composite one.
+# One RALA invocation may cook several real scans missed while the previous
+# cook was running (S3 catch-up). MPWG_RALA_CATCHUP_BUDGET_SECONDS defaults
+# to 2700s of new frames, and MPWG_UPLOAD_TIMEOUT allows 900s for the last
+# upload. 4200s covers that without SIGTERM mid-PUT. Composite stays at 1800s.
+# MemoryMax matches composite; if the 2 GB host is exhausted the OOM score
+# above kills this unit before the composite one.
 MemoryMax=1536M
-TimeoutStartSec=1800
+TimeoutStartSec=4200
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=mpwg-radar-rala

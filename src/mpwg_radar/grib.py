@@ -100,8 +100,7 @@ class ReflectivityFrame:
 
     @property
     def frame_id(self) -> str:
-        vt = self.valid_time.astimezone(timezone.utc)
-        return vt.strftime("%Y%m%dT%H%M%SZ")
+        return frame_id_for(self.valid_time)
 
     @property
     def bbox(self) -> BBox:
@@ -111,6 +110,11 @@ class ReflectivityFrame:
             east=float(np.max(self.lon)),
             north=float(np.max(self.lat)),
         )
+
+
+def frame_id_for(valid_time: datetime) -> str:
+    """UTC frame id. Same string the cooker uses for tile directories."""
+    return valid_time.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
 
 def _read_path(path: Union[str, Path]) -> bytes:

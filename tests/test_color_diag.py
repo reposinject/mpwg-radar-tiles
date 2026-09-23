@@ -21,7 +21,7 @@ def _rgba(pal, dbz: float):
 
 def test_trace_is_the_production_colorize_path():
     pal = load_palette("mpwg-rala-2026-09")
-    assert pal.version == "2026-09-rala-p3c"
+    assert pal.version == "2026-09-rala-p3d"
     assert pal._lut_step == 0.1
     for dbz in DIAGNOSTIC_DBZ:
         row = trace_colorize(pal, dbz)
@@ -92,7 +92,7 @@ def test_no_echo_and_missing_are_alpha_zero():
 def test_color_diag_cli_prints_the_probe_table(capsys):
     assert main(["color-diag"]) == 0
     out = capsys.readouterr().out
-    assert "2026-09-rala-p3c" in out
+    assert "2026-09-rala-p3d" in out
     assert "normalize: identity" in out
     for dbz in ("0.1", "10.0", "22.5", "52.5", "70.0"):
         assert dbz in out

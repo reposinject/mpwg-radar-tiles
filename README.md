@@ -45,7 +45,7 @@ Env (also accepted as unprefixed `REGION` / `BBOX`):
 | `MPWG_MODES` | `clean` | `clean`, or `clean,standard,all` |
 | `MPWG_PRODUCT` | `composite` | Manual cook default. Leave `composite` in `/etc/mpwg-radar.env`. The RALA unit sets `rala` for that process only. |
 | `MPWG_DISPLAY_MIN_DBZ` | (palette JSON) | Optional display cutoff override. Composite JSON=15, RALA JSON=-32. |
-| `MPWG_PALETTE` | (per product) | Optional. Composite `mpwg-clean-2026-09`; RALA `mpwg-rala-2026-09` (version `2026-09-rala-p3c`). |
+| `MPWG_PALETTE` | (per product) | Optional. Composite `mpwg-clean-2026-09`; RALA `mpwg-rala-2026-09` (version `2026-09-rala-p3d`, same stop table as p3c). |
 | `MPWG_RETENTION_FRAMES` | `30` | Composite frame cap (count only, no age limit). |
 | `MPWG_RALA_RETENTION_MINUTES` | `75` | RALA rolling window. Age is the operating limit (≥60-minute loop). |
 | `MPWG_RALA_RETENTION_FRAMES` | `60` | RALA safety ceiling, above ~38 frames at a 2-minute cadence over 75 minutes. |
@@ -105,9 +105,9 @@ Stops live in `src/mpwg_radar/palettes/mpwg-clean-2026-09.json`. `colorbar.png` 
 
 ### RALA palette and render (Phase 3, test product)
 
-The echo footprint already lined up with RadarScope, so the RALA source is unchanged (`ReflectivityAtLowestAltitude`, param 57). QC, the no-echo / missing mask, and the mask-clipped contour are unchanged. Phase 3 only replaces the color ramp and how many real scans the loop keeps.
+The echo footprint already lined up with RadarScope, so the RALA source is unchanged (`ReflectivityAtLowestAltitude`, param 57). QC and the no-echo / missing mask are unchanged. The p3c color stops are unchanged. `2026-09-rala-p3d` is a render-path stamp: the mask-clipped resample is tighter, so a cook repaints frames that still carry p3c.
 
-RALA tiles use `src/mpwg_radar/palettes/mpwg-rala-2026-09.json` (version `2026-09-rala-p3c`). Color is a **piecewise** RGBA interpolation on actual dBZ (0.1 dBZ LUT, half-up index, no rescale). RGB at the RadarScope sample dBZ **2.0, 10.3, 24.8, 31.7, 39.7, 48.3, 56.4, 64.7** is unchanged. Stops every 2.5 dBZ are filled in between those samples so a calibration strip cannot collapse a 10 dBZ family onto one swatch. 48.3→56.4 follows the short hue arc (orange through red to magenta) instead of a guessed red cliff. 75 is white. There is no cyan/aqua stop.
+RALA tiles use `src/mpwg_radar/palettes/mpwg-rala-2026-09.json` (version `2026-09-rala-p3d`). Color is a **piecewise** RGBA interpolation on actual dBZ (0.1 dBZ LUT, half-up index, no rescale). RGB at the RadarScope sample dBZ **2.0, 10.3, 24.8, 31.7, 39.7, 48.3, 56.4, 64.7** is unchanged. Stops every 2.5 dBZ are filled in between those samples so a calibration strip cannot collapse a 10 dBZ family onto one swatch. 48.3→56.4 follows the short hue arc (orange through red to magenta) instead of a guessed red cliff. 75 is white. There is no cyan/aqua stop. The hex stops are the p3c table.
 
 Valid-dBZ alpha is `56 + 199 * t²` with `t` running from -32 to 24.8, then 255. Weak returns stay visible and quieter than the opaque greens. There is no transparent cutoff at 10 dBZ. No-echo and missing stay alpha 0 via the category mask, not via that ramp.
 
@@ -156,7 +156,7 @@ Valid-dBZ alpha is `56 + 199 * t²` with `t` running from -32 to 24.8, then 255.
 | 72.5 | `#F7CDF6` | 247 | 205 | 246 | 255 | magenta toward white |
 | 75 | `#FFFFFF` | 255 | 255 | 255 | 255 | white extreme |
 
-**Anti-bloom rule:** a pixel is colored only when its nearest MRMS cell is real echo. A clear-air cell next to a core stays empty — the outline is not allowed to grow into clear air. Inside the echo, the edge you see is a smooth contour set in from the square cell boundary, so the 0.01° grid does not read as a mosaic. A single weak cell is still drawn (a small soft dot), not deleted and not cut off below 15 dBZ. No-echo and missing stay alpha 0. Composite tiles stay nearest-neighbor with the Clean palette.
+**Anti-bloom rule:** a pixel is colored only when its nearest MRMS cell is real echo. A clear-air cell next to a core stays empty. Inside the echo, alpha insets the square rim over the outer part of the boundary cell, so the 0.01° grid is not a hard mosaic and the rest of the cell stays opaque. dBZ is a local resample of valid neighbors only: shared faces grade, cell centers stay near the source value, and a 25 dBZ cell beside no-echo does not become a 25→18→12→6 ramp. A single weak cell is still drawn (a small disc), not deleted and not cut off below 15 dBZ. No-echo and missing stay alpha 0. Composite tiles stay nearest-neighbor with the Clean palette.
 
 ### RALA frame archive (Phase 3)
 
@@ -182,7 +182,9 @@ python3 -m mpwg_radar cook --product rala --region central-texas \
   --source synthetic --no-upload --out output/rala-phase2
 ```
 
-Tiles: `output/rala-phase2/radar/rala/clean/latest/{z}/{x}/{y}.png`. Storm edges should be smooth and should stop at the echo mask (no halo in the clear slot). Inside the squall, color should grade from green through orange into magenta instead of flat squares. `frame.json` `valid_time` is still the frame time. `mode_spec.sample` is `masked-splat`, `mode_spec.smooth_kind` is `masked-splat`, and `mode_spec.despeckle` is false. `display_min_dbz` is -32. Palette version on that frame is `2026-09-rala-p3c`.
+Tiles: `output/rala-phase2/radar/rala/clean/latest/{z}/{x}/{y}.png`. Storm edges should stop at the echo mask. The outer part of a boundary cell feathers; the cell center stays opaque, and clear-air neighbors stay empty. A 25 dBZ cell beside no-echo stays near 25 dBZ (no invented 18/12/6 fringe). Inside the squall, neighboring cells grade across their shared face and a hot core stays in its own color family. `frame.json` `valid_time` is still the frame time. `mode_spec.sample` is `masked-splat`, `mode_spec.smooth_kind` is `masked-splat`, and `mode_spec.despeckle` is false. `display_min_dbz` is -32. Palette version on that frame is `2026-09-rala-p3d`.
+
+`python3 -m mpwg_radar color-diag` still prints the p3c stop table. Decade pairs (22 vs 29, 31 vs 39, 41 vs 49) stay distinct. That check is the color ramp, not the spatial resample.
 
 ## Layout
 

@@ -127,7 +127,7 @@ def test_rala_piecewise_anchors_match_radarscope_stops():
     from mpwg_radar.palette import RALA_PALETTE_VERSION, derive_rala_p3c_stops
 
     pal = load_palette("mpwg-rala-2026-09")
-    assert pal.version == RALA_PALETTE_VERSION == "2026-09-rala-p3c"
+    assert pal.version == RALA_PALETTE_VERSION == "2026-09-rala-p3d"
     assert pal.min_dbz == -32.0
     derived = derive_rala_p3c_stops()
     assert [stop.dbz for stop in pal.stops] == [stop.dbz for stop in derived]

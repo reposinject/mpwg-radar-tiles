@@ -187,28 +187,33 @@ def sample_masked_bilinear(
 
 
 # Occupancy blur in MRMS-cell units. The visible outline is an iso-line of
-# this blur, drawn inside the echo mask. A half-plane edge sits near 0.5, so
-# alpha starts just above that and the square cell boundary is not the edge
-# you see. Clear air is never painted.
-_OCC_SIGMA = 1.55
-_OCC_LO = np.float32(0.545)
-_OCC_HI = np.float32(0.64)
-# Narrow disc for a one-cell return. Used only where occupancy is low
-# (isolated or very thin echo). On a multi-cell storm it stays off, so it
-# cannot redraw the staircase the occupancy contour just removed.
+# this blur, drawn inside the echo mask. Sigma is about half a cell, so the
+# fade lives in the outer part of the boundary cell: the cell center stays
+# opaque, the square rim does not, and a storm does not grow a multi-cell
+# halo. A half-plane edge still sits near occupancy 0.5. Clear air is never
+# painted.
+_OCC_SIGMA = 0.52
+_OCC_LO = np.float32(0.56)
+_OCC_HI = np.float32(0.78)
+# Narrow disc for a one-cell return. Weight is gone well inside the cell, so
+# it cannot repaint the inset rim the occupancy contour just removed. It stays
+# on only while occupancy is still below the multi-cell iso-line, which is
+# an isolated cell, not the edge of a storm.
 _DISC_SIGMA = 0.46
 _DISC_LO = np.float32(0.82)
 _DISC_HI = np.float32(0.97)
-_DISC_KEEP_LO = np.float32(0.22)
-_DISC_KEEP_HI = np.float32(0.50)
-# Color is a wide blend so neighboring cells grade. A core is restored only
-# when the nearest cell is hotter than that blend, so a 65 dBZ peak stays
-# magenta and ordinary cells do not snap back to flat squares.
-_COLOR_SIGMA = 1.35
-_PEAK_SIGMA = 0.38
-_PEAK_MIX = np.float32(0.80)
-_CORE_RISE = np.float32(8.0)
-_SPLAT_RADIUS = 4
+_DISC_KEEP_LO = np.float32(0.60)
+_DISC_KEEP_HI = np.float32(0.70)
+# dBZ is a local resample of valid cells only. Neighbors grade across the
+# shared face; a cell center stays near its own value. NO-ECHO is not a
+# sample, so 25 dBZ beside clear air does not become 18→12→6. A light peak
+# pull keeps a hot cell in its own color family when that local blend is
+# cooler. This is not a wide blur of the finished RGBA raster.
+_COLOR_SIGMA = 0.35
+_PEAK_SIGMA = 0.32
+_PEAK_MIX = np.float32(0.45)
+_CORE_RISE = np.float32(10.0)
+_SPLAT_RADIUS = 3
 
 
 def _splat_echo(
@@ -223,7 +228,7 @@ def _splat_echo(
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Masked-splat dBZ and edge scale for echo pixels only.
 
-    The weights are the same 9×9 grid-index Gaussians as a full-tile pass:
+    The weights are the same grid-index Gaussians as a full-tile pass:
     nearest cell is the footprint, taps outside the mosaic count as clear
     air, and a clear-air pixel is never written. Clear pixels are skipped
     instead of allocating a 512×512 temporary on every kernel tap — that
@@ -309,6 +314,8 @@ def _splat_echo(
     disc_keep = np.clip(
         (_DISC_KEEP_HI - occ) / (_DISC_KEEP_HI - _DISC_KEEP_LO), 0.0, 1.0
     )
+    # The disc covers an isolated cell the contour has not reached. On a
+    # storm edge the contour already owns the rim, and the disc stays off.
     edge_scale[ys, xs] = np.maximum(blob, disc * disc_keep).astype(np.float32)
 
     use = den > np.float32(1e-6)
@@ -339,10 +346,10 @@ def sample_masked_splat(
 
     The nearest source cell is the footprint. A query whose nearest cell is
     no-echo or missing stays empty, even if the smoothed outline would have
-    reached it. Inside echo, alpha follows a blurred occupancy field, so a
-    staircase of MRMS cells becomes one inset contour. A lone valid cell is
-    kept as a soft disc. dBZ is a Gaussian blend of nearby echo cells, with
-    hot cores pulled back toward the peak cell.
+    reached it. Inside echo, alpha follows a short occupancy contour so the
+    square rim is inset without fading the rest of the cell. A lone valid
+    cell is kept as a small disc. dBZ is a narrow blend of nearby echo
+    cells, with a light pull back toward a hotter peak cell.
     """
     src = np.asarray(dbz)
     qlat_a = np.asarray(qlat)
@@ -406,8 +413,9 @@ def render_tile(
     ``nearest`` (composite) copies one MRMS cell into every pixel of that
     cell. ``masked-splat`` (RALA) and ``masked-bilinear`` keep that nearest
     cell as the footprint and only blend inside echo, so a clear-air neighbor
-    stays empty. Splat draws a smooth contour inset from the square cell
-    edge; a lone echo cell stays a soft disc.
+    stays empty. Splat insets the square rim with a short contour and blends
+    dBZ only across the shared face of neighboring echo cells; a lone echo
+    cell stays a small disc.
     """
     qlon, qlat = _query_lonlat(z, x, y, tile_size)
     if sample_mode in (SAMPLE_MASKED_BILINEAR, SAMPLE_MASKED_SPLAT):

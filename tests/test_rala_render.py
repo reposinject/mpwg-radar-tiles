@@ -298,22 +298,24 @@ def test_splat_echo_only_matches_the_contour_on_a_fixed_block():
     qlon = np.linspace(-98.02, -97.98, 5)
     qlon_g, qlat_g = np.meshgrid(qlon, qlat)
     got_dbz, got_cat, got_edge = sample_masked_splat(dbz, lat, lon, qlat_g, qlon_g, cat)
+    # Cell centers stay near the source sample. The old wide color kernel
+    # turned 12 into ~25 and 62 into ~56, and it faded the whole outer ring.
     expect_dbz = np.array(
         [
-            [25.10894, 29.479212, 32.545193, 37.683018, np.nan],
-            [26.069216, 50.063465, 56.126213, 32.582172, np.nan],
-            [24.843527, 44.108112, 30.947645, 29.360752, np.nan],
-            [22.06555, 24.995136, 26.06538, 25.183, np.nan],
+            [12.158765, 18.57313, 22.87768, 39.526863, np.nan],
+            [15.507544, 53.816185, 60.371178, 28.625975, np.nan],
+            [9.769073, 46.802132, 33.279247, 21.203264, np.nan],
+            [11.059169, 16.48444, 19.104752, 14.201126, np.nan],
             [np.nan, np.nan, np.nan, np.nan, np.nan],
         ],
         dtype=np.float32,
     )
     expect_edge = np.array(
         [
-            [0.413506, 0.037147, 0.037147, 0.413506, 0.0],
-            [0.037147, 0.830341, 0.83034, 0.037147, 0.0],
-            [0.037147, 0.830341, 0.830341, 0.037147, 0.0],
-            [0.413506, 0.037147, 0.037147, 0.413506, 0.0],
+            [0.974104, 1.0, 1.0, 0.974104, 0.0],
+            [1.0, 1.0, 1.0, 1.0, 0.0],
+            [1.0, 1.0, 1.0, 1.0, 0.0],
+            [0.974104, 1.0, 1.0, 0.974104, 0.0],
             [0.0, 0.0, 0.0, 0.0, 0.0],
         ],
         dtype=np.float32,
@@ -334,3 +336,74 @@ def test_splat_echo_only_matches_the_contour_on_a_fixed_block():
     # The clear column stays empty. The footprint did not grow.
     assert np.all(np.isnan(got_dbz[:, 4]))
     assert np.all(got_edge[:, 4] == 0)
+    src = np.array(
+        [
+            [12, 18, 22, 40],
+            [15, 55, 62, 28],
+            [9, 48, 33, 21],
+            [11, 16, 19, 14],
+        ],
+        dtype=np.float32,
+    )
+    err = np.abs(got_dbz[:4, :4] - src)
+    assert float(err.max()) < 3.0
+    assert float(got_dbz[1, 2]) > 58.0  # 62 dBZ core is not averaged into the 50s
+    assert float(got_dbz[0, 0]) < 16.0  # 12 dBZ edge is not lifted into the 20s
+    assert float(got_edge[:4, :4].min()) > 0.9
+
+
+def test_splat_does_not_invent_a_low_dbz_halo_beside_clear_air():
+    """25 dBZ against NO-ECHO stays 25. The fade is alpha, inside the cell.
+
+    A wide color kernel used to lift an outer 25 dBZ skirt toward the core
+    and drop the edge alpha across the whole cell, which read as a glow into
+    clear air. Clear-air neighbors stay empty either way.
+    """
+    lat = np.arange(30.10, 29.90, -0.01, dtype=np.float64)
+    lon = np.arange(-98.10, -97.90, 0.01, dtype=np.float64)
+    dbz = np.full((lat.size, lon.size), np.nan, dtype=np.float32)
+    cat = np.full(dbz.shape, CAT_NO_ECHO, dtype=np.uint8)
+    # Northern block: 25 dBZ skirt around a 60 dBZ core. South of row 8 is clear.
+    dbz[2:9, 4:12] = 25.0
+    dbz[4:7, 6:10] = 60.0
+    cat[np.isfinite(dbz)] = CAT_VALID
+    edge_row = 8  # last echo row of the skirt (index 8 is 25; index 9 is clear)
+    # The skirt is rows 2:9, so the last echo row is index 8.
+    assert abs(float(dbz[8, 7]) - 25.0) < 1e-6
+    edge_lat = float(lat[edge_row])
+    mid_lon = float(lon[7])
+
+    center, center_cat, center_s = sample_masked_splat(
+        dbz, lat, lon, np.array([[edge_lat]]), np.array([[mid_lon]]), cat
+    )
+    assert center_cat[0, 0] == CAT_VALID
+    assert abs(float(center[0, 0]) - 25.0) < 1.5
+    assert float(center_s[0, 0]) > 0.9
+
+    # Still inside the echo cell, near the clear neighbor. dBZ does not step
+    # down through 18/12/6; only the stamp fades.
+    # Outer rim of the same cell. Alpha is falling; dBZ is still the source
+    # value, not a manufactured 18→12→6 ramp.
+    rim_lat = edge_lat - 0.0040
+    rim, rim_cat, rim_s = sample_masked_splat(
+        dbz, lat, lon, np.array([[rim_lat]]), np.array([[mid_lon]]), cat
+    )
+    assert rim_cat[0, 0] == CAT_VALID
+    assert abs(float(rim[0, 0]) - 25.0) < 1.5
+    assert float(rim_s[0, 0]) < 0.35
+    assert float(rim_s[0, 0]) < float(center_s[0, 0])
+
+    clear, clear_cat, clear_s = sample_masked_splat(
+        dbz, lat, lon, np.array([[edge_lat - 0.006]]), np.array([[mid_lon]]), cat
+    )
+    assert clear_cat[0, 0] == CAT_NO_ECHO
+    assert np.isnan(clear[0, 0])
+    assert float(clear_s[0, 0]) == 0.0
+
+    # The core one cell in from the skirt stays hot, not washed toward 25.
+    core, core_cat, core_s = sample_masked_splat(
+        dbz, lat, lon, np.array([[float(lat[5])]]), np.array([[float(lon[8])]]), cat
+    )
+    assert core_cat[0, 0] == CAT_VALID
+    assert float(core[0, 0]) > 57.0
+    assert float(core_s[0, 0]) > 0.9

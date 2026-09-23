@@ -45,7 +45,7 @@ Env (also accepted as unprefixed `REGION` / `BBOX`):
 | `MPWG_MODES` | `clean` | `clean`, or `clean,standard,all` |
 | `MPWG_PRODUCT` | `composite` | Manual cook default. Leave `composite` in `/etc/mpwg-radar.env`. The RALA unit sets `rala` for that process only. |
 | `MPWG_DISPLAY_MIN_DBZ` | (palette JSON) | Optional display cutoff override. Composite JSON=15, RALA JSON=-32. |
-| `MPWG_PALETTE` | (per product) | Optional. Composite `mpwg-clean-2026-09`; RALA `mpwg-rala-2026-09` (version `2026-09-rala-p3b`). |
+| `MPWG_PALETTE` | (per product) | Optional. Composite `mpwg-clean-2026-09`; RALA `mpwg-rala-2026-09` (version `2026-09-rala-p3c`). |
 | `MPWG_RETENTION_FRAMES` | `30` | Composite frame cap (count only, no age limit). |
 | `MPWG_RALA_RETENTION_MINUTES` | `75` | RALA rolling window. Age is the operating limit (≥60-minute loop). |
 | `MPWG_RALA_RETENTION_FRAMES` | `60` | RALA safety ceiling, above ~38 frames at a 2-minute cadence over 75 minutes. |
@@ -107,26 +107,54 @@ Stops live in `src/mpwg_radar/palettes/mpwg-clean-2026-09.json`. `colorbar.png` 
 
 The echo footprint already lined up with RadarScope, so the RALA source is unchanged (`ReflectivityAtLowestAltitude`, param 57). QC, the no-echo / missing mask, and the mask-clipped contour are unchanged. Phase 3 only replaces the color ramp and how many real scans the loop keeps.
 
-RALA tiles use `src/mpwg_radar/palettes/mpwg-rala-2026-09.json` (version `2026-09-rala-p3b`). Color is a **piecewise** RGBA interpolation on actual dBZ (0.1 dBZ LUT): linear between James's RadarScope calibration anchors and inspector taps, not a generic smooth gradient and not a saturation boost. There is no cyan/aqua stop. Yellow holds through the high 30s and low 40s; 44–48 stays light/medium orange; solid red starts near 50.6; magenta starts at 56.4 and purple by 61.2. `-32` and `78` are bookends (a fainter valid wisp, and pale pink above the core). No-echo and missing stay alpha 0. Valid very-low dBZ stays visible. The on-screen legend is this stop list. The old ticks `-32, 5, 15, 29, 36, 55, 75+` are not stops.
+RALA tiles use `src/mpwg_radar/palettes/mpwg-rala-2026-09.json` (version `2026-09-rala-p3c`). Color is a **piecewise** RGBA interpolation on actual dBZ (0.1 dBZ LUT, half-up index, no rescale). RGB at the RadarScope sample dBZ **2.0, 10.3, 24.8, 31.7, 39.7, 48.3, 56.4, 64.7** is unchanged. Stops every 2.5 dBZ are filled in between those samples so a calibration strip cannot collapse a 10 dBZ family onto one swatch. 48.3→56.4 follows the short hue arc (orange through red to magenta) instead of a guessed red cliff. 75 is white. There is no cyan/aqua stop.
 
-| dBZ | Hex | Alpha | Look |
-| --- | --- | --- | --- |
-| -32 | `#102E14` | 128 | faintest valid wisp (bookend) |
-| 2.0 | `#1C8A30` | 176 | crisp subtle weak return |
-| 10.3 | `#2E9E3C` | 235 | weak green |
-| 24.8 | `#3EBE48` | 255 | medium green |
-| 31.7 | `#9AD42E` | 255 | strong green / approaching yellow |
-| 36.9 | `#F4E400` | 255 | yellow |
-| 39.7 | `#F8DC10` | 255 | still yellow |
-| 44.1 | `#F8B020` | 255 | light orange |
-| 48.3 | `#F49822` | 255 | orange, not red |
-| 50.6 | `#DC1C18` | 255 | solid red |
-| 53.0 | `#D0141C` | 255 | red held through the low 50s |
-| 56.4 | `#C81878` | 255 | magenta begins |
-| 61.2 | `#B018D0` | 255 | purple |
-| 64.7 | `#E030D8` | 255 | magenta/pink core |
-| 70.2 | `#F048E4` | 255 | hot pink |
-| 78+ | `#FCD4FC` | 255 | pale pink above the core (bookend) |
+Valid-dBZ alpha is `56 + 199 * t²` with `t` running from -32 to 24.8, then 255. Weak returns stay visible and quieter than the opaque greens. There is no transparent cutoff at 10 dBZ. No-echo and missing stay alpha 0 via the category mask, not via that ramp.
+
+`python3 -m mpwg_radar color-diag` prints this stop table and the probe trace (input dBZ → decoded float32 → normalized, which is identity → LUT index → RGB → alpha → RGBA) through `palette.colorize`.
+
+| dBZ | Hex | R | G | B | A | Look |
+| --- | --- | --- | --- | --- | --- | --- |
+| -32 | `#102E14` | 16 | 46 | 20 | 56 | faintest valid wisp |
+| 0 | `#1B852E` | 27 | 133 | 46 | 119 | subtle weak return |
+| 2 | `#1C8A30` | 28 | 138 | 48 | 127 | subtle green |
+| 2.5 | `#1D8B31` | 29 | 139 | 49 | 129 | subtle green |
+| 5 | `#239134` | 35 | 145 | 52 | 140 | subtle green |
+| 7.5 | `#289738` | 40 | 151 | 56 | 152 | subtle green |
+| 10 | `#2D9D3C` | 45 | 157 | 60 | 165 | subtle green |
+| 10.3 | `#2E9E3C` | 46 | 158 | 60 | 166 | subtle green |
+| 12.5 | `#30A33E` | 48 | 163 | 62 | 178 | green |
+| 15 | `#33A840` | 51 | 168 | 64 | 192 | green |
+| 17.5 | `#36AE42` | 54 | 174 | 66 | 207 | green |
+| 20 | `#39B344` | 57 | 179 | 68 | 223 | green |
+| 22.5 | `#3BB946` | 59 | 185 | 70 | 239 | green |
+| 24.8 | `#3EBE48` | 62 | 190 | 72 | 255 | green |
+| 25 | `#41BF47` | 65 | 191 | 71 | 255 | green toward yellow |
+| 27.5 | `#62C73E` | 98 | 199 | 62 | 255 | green toward yellow |
+| 30 | `#83CF34` | 131 | 207 | 52 | 255 | green toward yellow |
+| 31.7 | `#9AD42E` | 154 | 212 | 46 | 255 | green toward yellow |
+| 32.5 | `#A3D52B` | 163 | 213 | 43 | 255 | yellow |
+| 35 | `#C1D722` | 193 | 215 | 34 | 255 | yellow |
+| 37.5 | `#DEDA18` | 222 | 218 | 24 | 255 | yellow |
+| 39.7 | `#F8DC10` | 248 | 220 | 16 | 255 | yellow |
+| 40 | `#F8DA11` | 248 | 218 | 17 | 255 | yellow |
+| 42.5 | `#F7C616` | 247 | 198 | 22 | 255 | yellow |
+| 45 | `#F6B21B` | 246 | 178 | 27 | 255 | orange |
+| 47.5 | `#F49E20` | 244 | 158 | 32 | 255 | orange |
+| 48.3 | `#F49822` | 244 | 152 | 34 | 255 | orange |
+| 50 | `#EB6320` | 235 | 99 | 32 | 255 | orange |
+| 52.5 | `#DD1D1F` | 221 | 29 | 31 | 255 | red |
+| 55 | `#D01A5A` | 208 | 26 | 90 | 255 | red |
+| 56.4 | `#C81878` | 200 | 24 | 120 | 255 | magenta |
+| 57.5 | `#CB1B85` | 203 | 27 | 133 | 255 | magenta |
+| 60 | `#D222A2` | 210 | 34 | 162 | 255 | magenta |
+| 62.5 | `#DA2ABF` | 218 | 42 | 191 | 255 | magenta |
+| 64.7 | `#E030D8` | 224 | 48 | 216 | 255 | magenta |
+| 65 | `#E136D9` | 225 | 54 | 217 | 255 | magenta toward white |
+| 67.5 | `#E868E3` | 232 | 104 | 227 | 255 | magenta toward white |
+| 70 | `#F09BEC` | 240 | 155 | 236 | 255 | magenta toward white |
+| 72.5 | `#F7CDF6` | 247 | 205 | 246 | 255 | magenta toward white |
+| 75 | `#FFFFFF` | 255 | 255 | 255 | 255 | white extreme |
 
 **Anti-bloom rule:** a pixel is colored only when its nearest MRMS cell is real echo. A clear-air cell next to a core stays empty — the outline is not allowed to grow into clear air. Inside the echo, the edge you see is a smooth contour set in from the square cell boundary, so the 0.01° grid does not read as a mosaic. A single weak cell is still drawn (a small soft dot), not deleted and not cut off below 15 dBZ. No-echo and missing stay alpha 0. Composite tiles stay nearest-neighbor with the Clean palette.
 
@@ -154,7 +182,7 @@ python3 -m mpwg_radar cook --product rala --region central-texas \
   --source synthetic --no-upload --out output/rala-phase2
 ```
 
-Tiles: `output/rala-phase2/radar/rala/clean/latest/{z}/{x}/{y}.png`. Storm edges should be smooth and should stop at the echo mask (no halo in the clear slot). Inside the squall, color should grade from green through orange into magenta instead of flat squares. `frame.json` `valid_time` is still the frame time. `mode_spec.sample` is `masked-splat`, `mode_spec.smooth_kind` is `masked-splat`, and `mode_spec.despeckle` is false. `display_min_dbz` is -32. Palette version on that frame is `2026-09-rala-p3b`.
+Tiles: `output/rala-phase2/radar/rala/clean/latest/{z}/{x}/{y}.png`. Storm edges should be smooth and should stop at the echo mask (no halo in the clear slot). Inside the squall, color should grade from green through orange into magenta instead of flat squares. `frame.json` `valid_time` is still the frame time. `mode_spec.sample` is `masked-splat`, `mode_spec.smooth_kind` is `masked-splat`, and `mode_spec.despeckle` is false. `display_min_dbz` is -32. Palette version on that frame is `2026-09-rala-p3c`.
 
 ## Layout
 

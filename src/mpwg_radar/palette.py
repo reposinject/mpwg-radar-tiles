@@ -3,21 +3,20 @@
 The cooker always stores/resamples reflectivity in dBZ. This module is the
 only place that applies a palette. Composite uses the MPWG Clean palette
 (James, Sep 2026): values below 15 dBZ are transparent. RALA uses palette
-revision 2026-09-rala-p3d. The stop table is the p3c ramp: the eight
-RadarScope sample RGBs stay put, dense stops fill every 2.5 dBZ, and RGBA is
-linear between those stops on a 0.1 dBZ LUT. p3d does not move those stops.
-It stamps the tighter mask-clipped resample so an already-cooked frame is
-repainted. The orange→magenta sample span follows the short hue arc so it
-passes through red instead of a guessed cliff. Valid weak returns use a
-continuous alpha ramp (no cutoff at 10 dBZ). colorize() does not mutate the
-input array.
+revision 2026-09-rala-p3e. Stops are a piecewise RGBA ramp on actual dBZ
+(0.1 dBZ LUT, half-up index, no rescale). The p3e anchors are richer
+descendants of the RadarScope taps: subtle through 10, weak through 20,
+rich green through 30, yellow into gold through 40, gold into orange
+through 50, red into deep red through 60, then pink into magenta into a
+hot extreme. Valid weak returns use a continuous alpha ramp (no cutoff at
+10 dBZ). colorize() does not mutate the input array. The calibration strip
+and the dBZ probe call that same colorize().
 Transparency for no-echo and missing is a category mask, not a dBZ cutoff,
 except for the palette display_min.
 """
 
 from __future__ import annotations
 
-import colorsys
 import json
 from dataclasses import dataclass
 from importlib import resources
@@ -71,28 +70,35 @@ FAMILY_PROOF_PAIRS: Tuple[Tuple[float, float], ...] = (
     (41.0, 49.0),
 )
 
-# p3d stamps the spatial resample. The stop table is still the p3c ramp.
-RALA_PALETTE_VERSION = "2026-09-rala-p3d"
+# p3e retunes the cooker LUT. Spatial sigmas stay at the p3d values.
+RALA_PALETTE_VERSION = "2026-09-rala-p3e"
 
-# RGB at James's RadarScope sample dBZ. These are not re-picked this revision.
-# Alpha is not stored here; rala_opacity() supplies it.
+# RGB control points. Alpha is not stored here; rala_opacity() supplies it.
+# Weak taps are the RadarScope samples (2.0 and the old 10.3 green, now on
+# 10). Stronger anchors are those same families with the mud pulled out:
+# richer green, yellow finished into gold, orange hotter, the red core held
+# through 60 (p3d was already pink at 56.4), magenta hotter, extreme held
+# past 65 instead of washing out by 70.
 _RALA_SAMPLE_RGB: Tuple[Tuple[float, Tuple[int, int, int]], ...] = (
     (2.0, (28, 138, 48)),
-    (10.3, (46, 158, 60)),
-    (24.8, (62, 190, 72)),
-    (31.7, (154, 212, 46)),
-    (39.7, (248, 220, 16)),
-    (48.3, (244, 152, 34)),
-    (56.4, (200, 24, 120)),
-    (64.7, (224, 48, 216)),
+    (10.0, (46, 158, 60)),
+    (20.0, (50, 182, 58)),
+    (25.0, (36, 208, 50)),
+    (30.0, (116, 216, 40)),
+    (32.0, (232, 220, 12)),
+    (40.0, (252, 176, 4)),
+    (48.0, (252, 108, 16)),
+    (50.0, (228, 28, 18)),
+    (56.0, (196, 10, 24)),
+    (60.0, (192, 6, 36)),
+    (65.0, (246, 18, 232)),
+    (70.0, (255, 72, 248)),
 )
 # Bookends. -32 keeps the existing dark-green wisp. 75 is the white extreme.
 _RALA_FLOOR_DBZ = -32.0
 _RALA_FLOOR_RGB = (16, 46, 20)
 _RALA_WHITE_DBZ = 75.0
 _RALA_WHITE_RGB = (255, 255, 255)
-# Shortest hue arc between the orange sample and the magenta sample.
-_RALA_HUE_ARC = (48.3, 56.4)
 # Opacity: visible at the floor, opaque at the medium-green sample. Gamma > 1
 # keeps single-digit dBZ subtler than a linear ramp from -32 without a step
 # at 10. alpha = FLOOR + (255-FLOOR) * t^GAMMA, t = (dbz-FLOOR)/(OPAQUE-FLOOR).
@@ -322,38 +328,27 @@ def _lerp_rgba(a: RGBA, b: RGBA, t: float) -> RGBA:
     )  # type: ignore[return-value]
 
 
-def _lerp_hue_rgba(a: RGBA, b: RGBA, t: float) -> RGBA:
-    """Shortest-hue blend. Orange → magenta passes through red; RGB lerp does not."""
-    h0, s0, v0 = colorsys.rgb_to_hsv(a[0] / 255.0, a[1] / 255.0, a[2] / 255.0)
-    h1, s1, v1 = colorsys.rgb_to_hsv(b[0] / 255.0, b[1] / 255.0, b[2] / 255.0)
-    dh = (h1 - h0 + 0.5) % 1.0 - 0.5
-    hue = (h0 + t * dh) % 1.0
-    sat = min(1.0, max(0.0, s0 + t * (s1 - s0)))
-    val = min(1.0, max(0.0, v0 + t * (v1 - v0)))
-    red, green, blue = colorsys.hsv_to_rgb(hue, sat, val)
-    alpha = a[3] + t * (b[3] - a[3])
-    return tuple(int(round(c)) for c in (red * 255.0, green * 255.0, blue * 255.0, alpha))  # type: ignore[return-value]
-
-
 def _rala_family_label(dbz: float) -> str:
     if dbz <= _RALA_FLOOR_DBZ:
         return f"{_fmt_dbz(dbz)} dBZ faintest valid wisp"
     if dbz < 2.0:
         return f"{_fmt_dbz(dbz)} dBZ subtle weak return"
-    if dbz <= 10.3:
+    if dbz <= 10.0:
         return f"{_fmt_dbz(dbz)} dBZ subtle green"
-    if dbz <= 24.8:
-        return f"{_fmt_dbz(dbz)} dBZ green"
-    if dbz <= 31.7:
-        return f"{_fmt_dbz(dbz)} dBZ green toward yellow"
-    if dbz <= 42.5:
-        return f"{_fmt_dbz(dbz)} dBZ yellow"
-    if dbz <= 50.0:
-        return f"{_fmt_dbz(dbz)} dBZ orange"
-    if dbz < 56.4:
-        return f"{_fmt_dbz(dbz)} dBZ red"
-    if dbz <= 64.7:
-        return f"{_fmt_dbz(dbz)} dBZ magenta"
+    if dbz <= 20.0:
+        return f"{_fmt_dbz(dbz)} dBZ weak green"
+    if dbz <= 30.0:
+        return f"{_fmt_dbz(dbz)} dBZ rich green"
+    if dbz <= 40.0:
+        return f"{_fmt_dbz(dbz)} dBZ yellow to gold"
+    if dbz < 50.0:
+        return f"{_fmt_dbz(dbz)} dBZ gold to orange"
+    if dbz <= 60.0:
+        return f"{_fmt_dbz(dbz)} dBZ red to deep red"
+    if dbz <= 65.0:
+        return f"{_fmt_dbz(dbz)} dBZ pink to magenta"
+    if dbz <= 70.0:
+        return f"{_fmt_dbz(dbz)} dBZ magenta extreme"
     if dbz < _RALA_WHITE_DBZ:
         return f"{_fmt_dbz(dbz)} dBZ magenta toward white"
     return f"{_fmt_dbz(dbz)}+ dBZ white extreme"
@@ -390,28 +385,26 @@ def _color_on_controls(dbz: float, controls: Sequence[Tuple[float, RGBA]]) -> RG
         return controls[0][1]
     if dbz >= controls[-1][0]:
         return controls[-1][1]
-    hue_lo, hue_hi = _RALA_HUE_ARC
     for (x0, c0), (x1, c1) in zip(controls, controls[1:]):
         if dbz <= x1 + 1e-9:
             span = x1 - x0
             t = 0.0 if span == 0 else (dbz - x0) / span
-            if abs(x0 - hue_lo) < 1e-6 and abs(x1 - hue_hi) < 1e-6:
-                return _lerp_hue_rgba(c0, c1, t)
             return _lerp_rgba(c0, c1, t)
     return controls[-1][1]
 
 
-def derive_rala_p3c_stops() -> List[PaletteStop]:
-    """Dense p3c stops. Sample RGB is fixed; in-between stops are computed.
+def derive_rala_p3e_stops() -> List[PaletteStop]:
+    """Dense p3e stops. Anchor RGB is the control table; in-between stops are computed.
 
-    Stops sit on every 2.5 dBZ from 0 through 70, plus the eight sample dBZ
-    values, the -32 wisp, and white at 75. 48.3→56.4 is the short hue arc
-    (orange through red to magenta). Every other segment is linear RGBA.
-    Alpha on each stop is ``rala_opacity`` of that dBZ, then linear between
-    stops — the same interpolation the app calibration strip should use.
+    Stops sit on every 2.5 dBZ from 0 through 75, plus the calibration
+    anchors, the 24.8 dBZ opaque knot, the -32 wisp, and white at 75.
+    Every segment is linear RGBA, which is the same interpolation
+    ``Palette.colorize`` uses for tiles, the calibration strip, and the
+    dBZ probe. Alpha on each stop is ``rala_opacity`` of that dBZ, then
+    linear between stops.
     """
     controls = _rala_control_points()
-    grid = {_RALA_FLOOR_DBZ, _RALA_WHITE_DBZ}
+    grid = {_RALA_FLOOR_DBZ, _RALA_WHITE_DBZ, _RALA_ALPHA_OPAQUE_DBZ}
     grid.update(i * 2.5 for i in range(0, 31))  # 0, 2.5, …, 75
     grid.update(dbz for dbz, _rgb in _RALA_SAMPLE_RGB)
     stops: List[PaletteStop] = []
@@ -433,28 +426,29 @@ def derive_rala_p3c_stops() -> List[PaletteStop]:
     return stops
 
 
-def rala_p3c_document() -> dict:
-    stops = derive_rala_p3c_stops()
+def rala_p3e_document() -> dict:
+    stops = derive_rala_p3e_stops()
     return {
         "id": "mpwg-rala-2026-09",
         "name": "MPWG RALA",
         "author": "James",
         "version": RALA_PALETTE_VERSION,
         "description": (
-            "Phase 3d render stamp (2026-09-rala-p3d) on the unchanged p3c "
-            "stop table. RGB at the RadarScope sample dBZ (2.0, 10.3, 24.8, "
-            "31.7, 39.7, 48.3, 56.4, 64.7) is unchanged. Dense stops every "
-            "2.5 dBZ are linear RGBA between those samples so a calibration "
-            "strip cannot collapse a 10 dBZ family onto one swatch. "
-            "48.3→56.4 follows the short hue arc (orange through red to "
-            "magenta) instead of a guessed red cliff. 75 is white. Alpha for "
-            "valid dBZ is 56 + 199*t^2 from -32 to 24.8, then 255 — visible "
-            "and subtle below 10, with no transparent cutoff at 10. No-echo "
-            "and missing stay alpha 0 via the category mask. No cyan/aqua "
-            "stop. display_min_dbz=-32. The p3d id is the cooker's repaint "
-            "stamp for the tighter mask-clipped resample; the hex stops are "
-            "the p3c ramp. Composite keeps mpwg-clean-2026-09. LUT step is "
-            "0.1 dBZ, half-up, no rescale."
+            "Phase 3e cooker LUT (2026-09-rala-p3e). Piecewise RGBA on actual "
+            "dBZ, 0.1 dBZ LUT, half-up, no rescale. Anchors near 2, 10, 25, "
+            "32, 40, 48, 56, and 65 dBZ are richer descendants of the "
+            "RadarScope taps. 0.1–10 stays the subtle green, 10–20 stays "
+            "weak, 20–30 is a richer green, 30–40 runs yellow into gold, "
+            "40–50 gold into orange, 50–60 red into deep red, and 60–65+ "
+            "pink into magenta into a hot extreme that holds past 65 before "
+            "white at 75. Dense stops every 2.5 dBZ keep a calibration strip "
+            "from collapsing a family onto one swatch. Alpha for valid dBZ "
+            "is 56 + 199*t^2 from -32 to 24.8, then 255 — visible and subtle "
+            "below 10, with no transparent cutoff at 10. No-echo and missing "
+            "stay alpha 0 via the category mask. No cyan/aqua stop. "
+            "display_min_dbz=-32. Composite keeps mpwg-clean-2026-09. The "
+            "calibration strip and the dBZ probe call palette.colorize, the "
+            "same LUT the tiles use."
         ),
         "units": "dBZ",
         "display_min_dbz": -32,

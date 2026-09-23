@@ -157,8 +157,9 @@ RALA = ProductSpec(
         "is PrecipFlag (not ingested this pass). Not "
         "MergedReflectivityAtLowestAltitude, which NSSL labels non-QC. "
         "No 10/15/20 dBZ blanking. Tiles are a mask-clipped contour: clear-air "
-        "cells stay empty, and the outline is drawn inside the echo so the "
-        "0.01° squares are not the edge. Valid weak returns stay visible."
+        "cells stay empty, and a short inset knocks the square rim off the "
+        "echo without a multi-cell halo. dBZ is resampled locally inside "
+        "that mask. Valid weak returns stay visible."
     ),
     attribution="NOAA MRMS ReflectivityAtLowestAltitude",
 )

@@ -3,11 +3,14 @@
 The cooker always stores/resamples reflectivity in dBZ. This module is the
 only place that applies a palette. Composite uses the MPWG Clean palette
 (James, Sep 2026): values below 15 dBZ are transparent. RALA uses palette
-revision 2026-09-rala-p3c: the eight RadarScope sample RGBs stay put, dense
-stops fill every 2.5 dBZ, and RGBA is linear between those stops on a 0.1 dBZ
-LUT. The orange→magenta sample span follows the short hue arc so it passes
-through red instead of a guessed cliff. Valid weak returns use a continuous
-alpha ramp (no cutoff at 10 dBZ). colorize() does not mutate the input array.
+revision 2026-09-rala-p3d. The stop table is the p3c ramp: the eight
+RadarScope sample RGBs stay put, dense stops fill every 2.5 dBZ, and RGBA is
+linear between those stops on a 0.1 dBZ LUT. p3d does not move those stops.
+It stamps the tighter mask-clipped resample so an already-cooked frame is
+repainted. The orange→magenta sample span follows the short hue arc so it
+passes through red instead of a guessed cliff. Valid weak returns use a
+continuous alpha ramp (no cutoff at 10 dBZ). colorize() does not mutate the
+input array.
 Transparency for no-echo and missing is a category mask, not a dBZ cutoff,
 except for the palette display_min.
 """
@@ -68,7 +71,8 @@ FAMILY_PROOF_PAIRS: Tuple[Tuple[float, float], ...] = (
     (41.0, 49.0),
 )
 
-RALA_PALETTE_VERSION = "2026-09-rala-p3c"
+# p3d stamps the spatial resample. The stop table is still the p3c ramp.
+RALA_PALETTE_VERSION = "2026-09-rala-p3d"
 
 # RGB at James's RadarScope sample dBZ. These are not re-picked this revision.
 # Alpha is not stored here; rala_opacity() supplies it.
@@ -437,17 +441,20 @@ def rala_p3c_document() -> dict:
         "author": "James",
         "version": RALA_PALETTE_VERSION,
         "description": (
-            "Phase 3c RALA ramp (2026-09-rala-p3c). RGB at the RadarScope "
-            "sample dBZ (2.0, 10.3, 24.8, 31.7, 39.7, 48.3, 56.4, 64.7) is "
-            "unchanged. Dense stops every 2.5 dBZ are linear RGBA between "
-            "those samples so a calibration strip cannot collapse a 10 dBZ "
-            "family onto one swatch. 48.3→56.4 follows the short hue arc "
-            "(orange through red to magenta) instead of a guessed red cliff. "
-            "75 is white. Alpha for valid dBZ is 56 + 199*t^2 from -32 to "
-            "24.8, then 255 — visible and subtle below 10, with no transparent "
-            "cutoff at 10. No-echo and missing stay alpha 0 via the category "
-            "mask. No cyan/aqua stop. display_min_dbz=-32. Composite keeps "
-            "mpwg-clean-2026-09. LUT step is 0.1 dBZ, half-up, no rescale."
+            "Phase 3d render stamp (2026-09-rala-p3d) on the unchanged p3c "
+            "stop table. RGB at the RadarScope sample dBZ (2.0, 10.3, 24.8, "
+            "31.7, 39.7, 48.3, 56.4, 64.7) is unchanged. Dense stops every "
+            "2.5 dBZ are linear RGBA between those samples so a calibration "
+            "strip cannot collapse a 10 dBZ family onto one swatch. "
+            "48.3→56.4 follows the short hue arc (orange through red to "
+            "magenta) instead of a guessed red cliff. 75 is white. Alpha for "
+            "valid dBZ is 56 + 199*t^2 from -32 to 24.8, then 255 — visible "
+            "and subtle below 10, with no transparent cutoff at 10. No-echo "
+            "and missing stay alpha 0 via the category mask. No cyan/aqua "
+            "stop. display_min_dbz=-32. The p3d id is the cooker's repaint "
+            "stamp for the tighter mask-clipped resample; the hex stops are "
+            "the p3c ramp. Composite keeps mpwg-clean-2026-09. LUT step is "
+            "0.1 dBZ, half-up, no rescale."
         ),
         "units": "dBZ",
         "display_min_dbz": -32,

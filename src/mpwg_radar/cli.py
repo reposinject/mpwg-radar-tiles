@@ -13,6 +13,7 @@ from mpwg_radar import __version__
 from mpwg_radar.config import load_config
 from mpwg_radar.cooker import cook
 from mpwg_radar.grib import decode_grib2
+from mpwg_radar.palette import color_diag_report, load_palette
 from mpwg_radar.geo import CENTRAL_TEXAS, REGIONS
 from mpwg_radar.preview import write_preview
 from mpwg_radar.products import COOKABLE_PRODUCT_IDS, DEFAULT_PRODUCT_ID
@@ -68,6 +69,21 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     dec_p = sub.add_parser("decode", help="Print GRIB2 crop stats (debug)")
     dec_p.add_argument("grib", type=Path)
 
+    diag_p = sub.add_parser(
+        "color-diag",
+        help="Trace dBZ through the production colorize LUT (decoded, index, RGBA)",
+    )
+    diag_p.add_argument(
+        "--palette",
+        default="mpwg-rala-2026-09",
+        help="Palette id or JSON path (default: RALA)",
+    )
+    diag_p.add_argument(
+        "--dbz",
+        default=None,
+        help="Comma-separated dBZ probes (default: the RALA calibration list)",
+    )
+
     args = parser.parse_args(argv)
     _setup_logging(args.log_level)
 
@@ -77,6 +93,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return _cmd_smoke(args)
     if args.cmd == "decode":
         return _cmd_decode(args)
+    if args.cmd == "color-diag":
+        return _cmd_color_diag(args)
     parser.error("unknown command")
     return 2
 
@@ -193,6 +211,18 @@ def _assert_smoke_tiles(mode_root: Path) -> None:
                 break
     if not has_echo:
         raise SystemExit("smoke tiles are 512×512 but fully transparent (no echo)")
+
+
+def _cmd_color_diag(args) -> int:
+    palette = load_palette(args.palette)
+    values = None
+    if args.dbz:
+        values = [float(part) for part in args.dbz.split(",") if part.strip()]
+    if values is None:
+        print(color_diag_report(palette))
+    else:
+        print(color_diag_report(palette, values))
+    return 0
 
 
 def _cmd_decode(args) -> int:

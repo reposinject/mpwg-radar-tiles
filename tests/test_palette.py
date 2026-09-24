@@ -110,17 +110,18 @@ def test_colorbar_starts_at_display_cutoff():
     assert arr[0, -1, 3] == 255
 
 
-# p3e calibration anchors. Weak taps are the RadarScope samples; the rest are
-# those families with the mud taken out. Alpha is still the continuous ramp.
+# p3f calibration anchors. 2 and 10 stay the RadarScope taps. Mid and high
+# bands are the p3e families with the remaining mud pulled out. Alpha is
+# still the continuous ramp.
 RALA_ANCHOR_RGB = {
     2.0: (28, 138, 48),
     10.0: (46, 158, 60),
-    25.0: (36, 208, 50),
-    32.0: (232, 220, 12),
-    40.0: (252, 176, 4),
-    48.0: (252, 108, 16),
-    56.0: (196, 10, 24),
-    65.0: (246, 18, 232),
+    25.0: (0, 176, 0),
+    32.0: (255, 246, 0),
+    40.0: (255, 108, 0),
+    48.0: (255, 40, 0),
+    56.0: (176, 0, 0),
+    65.0: (255, 0, 255),
 }
 
 # colorize() of 2026-09-rala-p3d at the same dBZ. Cores must beat these.
@@ -139,12 +140,12 @@ def _chroma(rgb) -> int:
 
 
 def test_rala_piecewise_anchors_match_stops():
-    from mpwg_radar.palette import RALA_PALETTE_VERSION, derive_rala_p3e_stops
+    from mpwg_radar.palette import RALA_PALETTE_VERSION, derive_rala_p3f_stops
 
     pal = load_palette("mpwg-rala-2026-09")
-    assert pal.version == RALA_PALETTE_VERSION == "2026-09-rala-p3e"
+    assert pal.version == RALA_PALETTE_VERSION == "2026-09-rala-p3f"
     assert pal.min_dbz == -32.0
-    derived = derive_rala_p3e_stops()
+    derived = derive_rala_p3f_stops()
     assert [stop.dbz for stop in pal.stops] == [stop.dbz for stop in derived]
     assert [stop.rgba for stop in pal.stops] == [stop.rgba for stop in derived]
     for stop in pal.stops:
@@ -197,34 +198,34 @@ def test_rala_anchor_feel_and_no_cyan():
     # 10 is still subtle green, not neon, and not yet opaque. No cutoff at 10.
     r10, g10, b10, a10 = _rgba(pal, 10.0)
     assert a2 < a10 < 220 and g10 > r10 + 40 and r10 < 80 and b10 < 90
-    # 20–30 rich greens: opaque by 24.8, G leads, richer than the weak tap.
-    _r248, _g248, _b248, a248 = _rgba(pal, 24.8)
-    assert a248 == 255
+    # 20–30 deep greens: opaque from 20, G leads, purer than the weak tap.
+    r20, g20, b20, a20 = _rgba(pal, 20.0)
+    assert a20 == 255 and g20 > r20 and g20 > b20 and g20 < 170 and b20 < 40
     r25, g25, b25, a25 = _rgba(pal, 25.0)
-    assert a25 == 255 and g25 > 190 and r25 < 80 and b25 < 80 and g25 > r25 + 100
-    assert g25 > g10 + 30
+    assert a25 == 255 and 150 <= g25 <= 200 and r25 < 20 and b25 < 20 and g25 > r25 + 100
+    assert g25 > g10
     r22, g22, b22, a22 = _rgba(pal, 22.8)
-    assert a10 < a22 < 255 and g22 > r22 and g22 > b22 and b22 < 90
+    assert a22 == 255 and g22 > r22 and g22 > b22 and b22 < 90
     for dbz in (25.7, 27.2, 30.0):
         r, g, b, a = _rgba(pal, dbz)
-        assert a == 255 and g > r and g > b and b < 90, (dbz, r, g, b)
-    # 30–40 yellow → gold. 32 is yellow; 40 is gold, not the old lemon.
+        assert a == 255 and g > r and g > b and b < 40, (dbz, r, g, b)
+    # 30–40 bright yellow → strong gold. Fully opaque.
     r32, g32, b32, a32 = _rgba(pal, 32.0)
-    assert a32 == 255 and r32 > 210 and g32 > 200 and b32 < 40
+    assert a32 == 255 and r32 > 240 and g32 > 230 and b32 < 10
     r40, g40, b40, a40 = _rgba(pal, 40.0)
-    assert a40 == 255 and r40 > 240 and 140 < g40 < 200 and b40 < 30
-    # 40–50 gold → orange.
+    assert a40 == 255 and r40 > 240 and 80 < g40 < 140 and b40 < 10
+    # 40–50 gold → heavy orange.
     r44, g44, b44, _ = _rgba(pal, 44.0)
-    assert r44 > 240 and g44 > g40 * 0.5 and g44 < g40 and b44 < 40
-    r48, g48, b48, _ = _rgba(pal, 48.0)
-    assert r48 > 240 and 70 < g48 < 140 and b48 < 40 and g48 < g40
-    # 50–60 red → deep red. 56 stays red; p3d was already pink here.
+    assert r44 > 240 and g44 > g40 * 0.4 and g44 < g40 and b44 < 20
+    r48, g48, b48, a48 = _rgba(pal, 48.0)
+    assert a48 == 255 and r48 > 240 and 20 < g48 < 70 and b48 < 10 and g48 < g40
+    # 50–60 vivid red → dark red core. 56 stays pure red, darker than 50.
     r50, g50, b50, a50 = _rgba(pal, 50.0)
-    assert a50 == 255 and r50 > 200 and g50 < 50 and b50 < 40
-    r56, g56, b56, _ = _rgba(pal, 56.0)
-    assert r56 > 160 and g56 < 40 and b56 < 50 and r56 > b56 + 100
-    r60, g60, b60, _ = _rgba(pal, 60.0)
-    assert r60 > 160 and g60 < 30 and b60 < 70 and r60 > b60 + 100
+    assert a50 == 255 and r50 > 240 and g50 < 20 and b50 < 20
+    r56, g56, b56, a56 = _rgba(pal, 56.0)
+    assert a56 == 255 and 150 < r56 < r50 and g56 < 10 and b56 < 20 and r56 > b56 + 100
+    r60, g60, b60, a60 = _rgba(pal, 60.0)
+    assert a60 == 255 and r60 > 150 and g60 < 15 and b60 < 80 and r60 > b60 + 80
     # 60–65+ pink → magenta → extreme. 65 is hot; 70 has not washed out.
     r62, g62, b62, _ = _rgba(pal, 62.5)
     assert r62 > 180 and b62 > 100 and g62 < 40 and b62 > g62
@@ -250,8 +251,30 @@ def test_rala_anchor_feel_and_no_cyan():
         assert stop.hex.upper() == "#{:02X}{:02X}{:02X}".format(*stop.rgba[:3])
 
 
-def test_rala_p3e_cores_pop_more_than_p3d_and_stay_continuous():
-    """Strong anchors are richer than p3d. The 0.1 dBZ LUT does not bucket."""
+# colorize() of 2026-09-rala-p3e at the bands James still called muted.
+_P3E_RGB = {
+    2.0: (28, 138, 48),
+    10.0: (46, 158, 60),
+    20.0: (50, 182, 58),
+    25.0: (36, 208, 50),
+    30.0: (116, 216, 40),
+    32.0: (232, 220, 12),
+    40.0: (252, 176, 4),
+    48.0: (252, 108, 16),
+    50.0: (228, 28, 18),
+    56.0: (196, 10, 24),
+    60.0: (192, 6, 36),
+    65.0: (246, 18, 232),
+    70.0: (255, 72, 248),
+}
+
+
+def _rgb_dist(a, b) -> float:
+    return float(np.linalg.norm(np.array(a[:3], dtype=np.float64) - np.array(b[:3], dtype=np.float64)))
+
+
+def test_rala_p3f_cores_pop_more_than_p3e_and_stay_continuous():
+    """Mid/high anchors are richer than p3e. Weak taps and the 0.1 dBZ LUT stay."""
     pal = load_palette("mpwg-rala-2026-09")
     assert _chroma(_rgba(pal, 25.0)) >= _chroma(_P3D_RGB[25.0]) + 30
     assert _rgba(pal, 40.0)[1] <= _P3D_RGB[40.0][1] - 30
@@ -259,9 +282,32 @@ def test_rala_p3e_cores_pop_more_than_p3d_and_stay_continuous():
     assert _rgba(pal, 56.0)[2] < 50 and _P3D_RGB[56.0][2] > 100
     assert _chroma(_rgba(pal, 65.0)) >= _chroma(_P3D_RGB[65.0]) + 40
     assert _chroma(_rgba(pal, 70.0)) >= _chroma(_P3D_RGB[70.0]) + 70
-    # Weak echoes stay on the old taps.
-    assert _rgba(pal, 2.0)[:3] == (28, 138, 48)
+    # Weak echoes stay on the RadarScope taps. Through 10 dBZ nothing moves.
+    assert _rgba(pal, 2.0)[:3] == _P3E_RGB[2.0]
+    assert _rgba(pal, 10.0)[:3] == _P3E_RGB[10.0]
     assert max(abs(a - b) for a, b in zip(_rgba(pal, 10.0)[:3], (45, 157, 60))) <= 2
+    for dbz in (25.0, 32.0, 40.0, 48.0, 50.0, 65.0, 70.0):
+        assert _chroma(_rgba(pal, dbz)) > _chroma(_P3E_RGB[dbz]), dbz
+    # Gold and orange leave the pale yellow. 50 is pure red; 56 is a darker pure core.
+    assert _rgba(pal, 40.0)[1] <= _P3E_RGB[40.0][1] - 40
+    assert _rgba(pal, 48.0)[1] <= _P3E_RGB[48.0][1] - 40
+    assert _rgba(pal, 50.0)[:3] == (255, 0, 0)
+    assert _rgba(pal, 56.0)[1] == 0 and _rgba(pal, 56.0)[2] == 0
+    assert _rgba(pal, 56.0)[0] < _rgba(pal, 50.0)[0] - 40
+    assert _rgb_dist(_rgba(pal, 50.0), _rgba(pal, 56.0)) > _rgb_dist(_P3E_RGB[50.0], _P3E_RGB[56.0])
+    assert _rgb_dist(_rgba(pal, 56.0), _rgba(pal, 60.0)) >= _rgb_dist(
+        _P3E_RGB[56.0], _P3E_RGB[60.0]
+    ) + 20
+    # Weak taps keep the quiet alpha. The storm body is opaque from 20 up.
+    assert _rgba(pal, 2.0)[3] == 127
+    assert _rgba(pal, 10.0)[3] == 165
+    assert _rgba(pal, 10.0)[3] < _rgba(pal, 15.0)[3] < _rgba(pal, 20.0)[3] == 255
+    for dbz in (25.0, 32.0, 40.0, 48.0, 56.0, 65.0):
+        assert _rgba(pal, dbz)[3] == 255
+    # 10–20 stays a deep subdued green, not a second neon.
+    assert _rgba(pal, 20.0)[1] < 160
+    assert _chroma(_rgba(pal, 20.0)) <= _chroma(_P3E_RGB[20.0]) + 15
+    assert _chroma(_rgba(pal, 25.0)) >= _chroma(_rgba(pal, 20.0)) + 30
 
     prev = None
     for step_i in range(-320, 751):

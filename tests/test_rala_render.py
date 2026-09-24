@@ -121,7 +121,7 @@ def test_isolated_weak_cell_survives_rala_clean_and_paints():
     assert 0 < rgba[4, 4, 3] < 255  # wispy, not an opaque dark block
     assert rgba[4, 5, 3] == 0
     r, g, b, _a = (int(c) for c in rgba[4, 4])
-    assert g > r and g > b
+    assert b > g > r
     assert not (r < 90 and g > 140 and b > 140)
     anchor15 = pal.colorize(np.array([[15.0]], dtype=np.float32))[0, 0]
     assert not np.array_equal(rgba[4, 4], anchor15)
@@ -298,14 +298,15 @@ def test_splat_echo_only_matches_the_contour_on_a_fixed_block():
     qlon = np.linspace(-98.02, -97.98, 5)
     qlon_g, qlat_g = np.meshgrid(qlon, qlat)
     got_dbz, got_cat, got_edge = sample_masked_splat(dbz, lat, lon, qlat_g, qlon_g, cat)
-    # Cell centers stay near the source sample. The old wide color kernel
-    # turned 12 into ~25 and 62 into ~56, and it faded the whole outer ring.
+    # Cell centers stay in their own family. p3g color sigma is 0.44 cell
+    # (p3d was 0.35). The retired wide kernel turned 12 into ~25 and 62 into
+    # ~56, and it faded the whole outer ring. Occupancy (edge) is unchanged.
     expect_dbz = np.array(
         [
-            [12.158765, 18.57313, 22.87768, 39.526863, np.nan],
-            [15.507544, 53.816185, 60.371178, 28.625975, np.nan],
-            [9.769073, 46.802132, 33.279247, 21.203264, np.nan],
-            [11.059169, 16.48444, 19.104752, 14.201126, np.nan],
+            [12.800564, 20.326721, 25.475813, 38.30217, np.nan],
+            [17.059305, 51.117523, 57.28192, 30.376078, np.nan],
+            [12.113941, 44.1955, 33.943657, 21.913576, np.nan],
+            [11.379105, 17.878231, 19.51019, 14.878299, np.nan],
             [np.nan, np.nan, np.nan, np.nan, np.nan],
         ],
         dtype=np.float32,
@@ -346,8 +347,8 @@ def test_splat_echo_only_matches_the_contour_on_a_fixed_block():
         dtype=np.float32,
     )
     err = np.abs(got_dbz[:4, :4] - src)
-    assert float(err.max()) < 3.0
-    assert float(got_dbz[1, 2]) > 58.0  # 62 dBZ core is not averaged into the 50s
+    assert float(err.max()) < 5.5
+    assert float(got_dbz[1, 2]) > 57.0  # 62 dBZ core stays in the high 50s
     assert float(got_dbz[0, 0]) < 16.0  # 12 dBZ edge is not lifted into the 20s
     assert float(got_edge[:4, :4].min()) > 0.9
 

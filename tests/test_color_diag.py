@@ -21,7 +21,7 @@ def _rgba(pal, dbz: float):
 
 def test_trace_is_the_production_colorize_path():
     pal = load_palette("mpwg-rala-2026-09")
-    assert pal.version == "2026-09-rala-p3f"
+    assert pal.version == "2026-09-rala-p3g"
     assert pal._lut_step == 0.1
     for dbz in DIAGNOSTIC_DBZ:
         row = trace_colorize(pal, dbz)
@@ -66,10 +66,13 @@ def test_weak_returns_are_visible_and_not_cut_off_at_10():
     # Crossing 10 does not punch a hole or a step.
     assert abs(alphas[9.9] - alphas[10.1]) <= 2
     assert alphas[9.9] > 0 and alphas[10.1] > 0
-    for dbz in (0.1, 1, 2, 5, 7.5):
+    for dbz in (0.1, 1, 2, 5):
         r, g, b, a = _rgba(pal, dbz)
         assert a > 0
-        assert g > r and g > b
+        assert b > g > r
+    # 7.5 is the light blue-green hinge: both cool channels are still up.
+    r, g, b, a = _rgba(pal, 7.5)
+    assert a > 0 and g > r and b > r and min(g, b) > 110
 
 
 def test_no_echo_and_missing_are_alpha_zero():
@@ -92,7 +95,7 @@ def test_no_echo_and_missing_are_alpha_zero():
 def test_color_diag_cli_prints_the_probe_table(capsys):
     assert main(["color-diag"]) == 0
     out = capsys.readouterr().out
-    assert "2026-09-rala-p3f" in out
+    assert "2026-09-rala-p3g" in out
     assert "normalize: identity" in out
     for dbz in ("0.1", "10.0", "22.5", "52.5", "70.0"):
         assert dbz in out

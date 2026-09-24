@@ -110,11 +110,11 @@ def test_colorbar_starts_at_display_cutoff():
     assert arr[0, -1, 3] == 255
 
 
-# p3g calibration anchors. 2 and 10 are the cool weak taps. 20 and the
-# mid/high bands are the p3f colors, unchanged. Alpha is still the ramp.
+# p3h calibration anchors. 2 is light blue and 10 is cyan. 20 and the
+# mid/high bands are the p3g colors, unchanged. Alpha is still the ramp.
 RALA_ANCHOR_RGB = {
-    2.0: (58, 112, 162),
-    10.0: (56, 152, 118),
+    2.0: (84, 138, 206),
+    10.0: (18, 172, 198),
     20.0: (8, 142, 18),
     25.0: (0, 176, 0),
     32.0: (255, 246, 0),
@@ -140,12 +140,12 @@ def _chroma(rgb) -> int:
 
 
 def test_rala_piecewise_anchors_match_stops():
-    from mpwg_radar.palette import RALA_PALETTE_VERSION, derive_rala_p3g_stops
+    from mpwg_radar.palette import RALA_PALETTE_VERSION, derive_rala_p3h_stops
 
     pal = load_palette("mpwg-rala-2026-09")
-    assert pal.version == RALA_PALETTE_VERSION == "2026-09-rala-p3g"
+    assert pal.version == RALA_PALETTE_VERSION == "2026-09-rala-p3h"
     assert pal.min_dbz == -32.0
-    derived = derive_rala_p3g_stops()
+    derived = derive_rala_p3h_stops()
     assert [stop.dbz for stop in pal.stops] == [stop.dbz for stop in derived]
     assert [stop.rgba for stop in pal.stops] == [stop.rgba for stop in derived]
     for stop in pal.stops:
@@ -185,24 +185,33 @@ def test_rala_ramps_are_piecewise_not_a_single_gradient():
 
 def test_rala_anchor_feel_and_no_cyan():
     pal = load_palette("mpwg-rala-2026-09")
-    # 2 dBZ is a muted cool blue: blue leads, partial alpha, not a green rain tap.
+    # 2 dBZ is light blue: blue leads, partial alpha, not a green rain tap.
     r2, g2, b2, a2 = _rgba(pal, 2.0)
     assert 100 < a2 < 220
-    assert b2 > g2 > r2 and b2 > 140 and r2 > 40 and g2 < 140
-    # Trace below 2 stays cool blue and visible. It is not deleted.
+    assert b2 > g2 > r2 and b2 > 180 and r2 > 40 and g2 < 160
+    # Trace below 2 stays pale blue and visible. It is not deleted.
     r09, g09, b09, a09 = _rgba(pal, 0.9)
     assert 0 < a09 < a2 and b09 > g09 > r09
     for dbz in (0.1, 2.0, 5.0):
         r, g, b, a = _rgba(pal, dbz)
-        assert a > 0 and b > g > r and g < 160, (dbz, r, g, b)
-    # 10 is light blue-green. Green has caught blue; blue is still in the color.
+        assert a > 0 and b > g > r and g < 170, (dbz, r, g, b)
+    # 5 is the cool-blue peak: bluer than the pale tap at 2.
+    assert _rgba(pal, 5.0)[2] >= b2
+    # 10 is muted cyan. Blue still leads, green is close, and red stays low.
     r10, g10, b10, a10 = _rgba(pal, 10.0)
-    assert a2 < a10 < 220 and g10 > b10 > r10 and b10 > 100 and g10 - b10 < 50
-    # Blue falls away into ordinary green. 20 is the p3f deep-green handoff.
-    blues = [_rgba(pal, dbz)[2] for dbz in (2.0, 5.0, 10.0, 15.0, 20.0)]
+    assert a2 < a10 < 220 and b10 >= g10 > r10 and b10 > 170 and g10 > 150 and r10 < 50
+    assert abs(g10 - b10) < 40
+    # Cool blue deepens, then blue falls through cyan into the locked green.
+    blues = [_rgba(pal, dbz)[2] for dbz in (5.0, 10.0, 15.0, 20.0)]
     assert blues == sorted(blues, reverse=True)
     assert blues[0] - blues[-1] > 100
-    for dbz in (12.5, 15.0, 17.2, 20.0):
+    # 12.5 is still cyan. 15 is blue-green, with blue still well up.
+    r125, g125, b125, a125 = _rgba(pal, 12.5)
+    assert a125 > 0 and min(g125, b125) > 150 and abs(g125 - b125) < 30 and r125 < 40
+    r15, g15, b15, a15 = _rgba(pal, 15.0)
+    assert a15 > a10 and g15 > b15 > r15 and b15 > 110 and g15 < 200
+    # 17.2 is the late weak green. 20 is the locked deep-green handoff.
+    for dbz in (17.2, 20.0):
         r, g, b, a = _rgba(pal, dbz)
         assert a > 0 and g > r and g > b and b < 110 and g < 200, (dbz, r, g, b)
     # 20–30 deep greens: opaque from 20, G leads, purer than the weak tap.
@@ -244,15 +253,19 @@ def test_rala_anchor_feel_and_no_cyan():
     r70, g70, b70, _ = _rgba(pal, 70.0)
     assert r70 > 230 and b70 > 200 and g70 < 120 and b70 > g70
     assert _rgba(pal, 75.0)[:3] == (255, 255, 255)
-    # 5 dBZ is still cool blue. A negative trace is a darker blue, not green.
+    # 5 dBZ is cool blue. A negative trace is pale blue, not green.
     _r5, g5, b5, a5 = _rgba(pal, 5.0)
     assert 0 < a5 < 255 and b5 > g5 > _r5
     rm, gm, bm, am = _rgba(pal, -5.0)
-    assert 0 < am < a2 and bm > gm > rm and gm < 140
+    assert 0 < am < a2 and bm > gm > rm and bm > gm + 20
     for dbz in np.linspace(-32.0, 78.0, 221):
         r, g, b, a = _rgba(pal, float(dbz))
         assert a > 0
-        assert not (r < 90 and g > 140 and b > 140), (dbz, r, g, b)
+        # Neon clear-air aqua stays out of the whole ramp.
+        assert not (r < 40 and g > 210 and b > 210), (dbz, r, g, b)
+        # From the locked deep green up, cyan is gone.
+        if dbz >= 20.0:
+            assert not (r < 90 and g > 140 and b > 140), (dbz, r, g, b)
     # Legend hex matches the stop table the app draws.
     for stop in pal.stops:
         assert stop.hex.upper() == "#{:02X}{:02X}{:02X}".format(*stop.rgba[:3])
@@ -280,7 +293,7 @@ def _rgb_dist(a, b) -> float:
     return float(np.linalg.norm(np.array(a[:3], dtype=np.float64) - np.array(b[:3], dtype=np.float64)))
 
 
-# colorize() RGB of 2026-09-rala-p3f. From 20 dBZ up p3g must match it.
+# colorize() RGB of 2026-09-rala-p3f. From 20 dBZ up p3g matched it, and p3h still does.
 _P3F_RGB = {
     2.0: (28, 138, 48),
     10.0: (46, 158, 60),
@@ -298,16 +311,97 @@ _P3F_RGB = {
 }
 
 
-def test_rala_p3g_weak_band_leaves_p3f_cores_and_stays_continuous():
-    """Lowest valid dBZ leaves the p3f green. From 20 up the p3f RGB stays."""
+# colorize() RGBA of 2026-09-rala-p3g. Below 20, p3h must be bluer.
+# From 20 up, p3h must match these bytes, alpha included.
+_P3G_WEAK_RGB = {
+    0.0: (56, 108, 157),
+    2.0: (58, 112, 162),
+    5.0: (57, 127, 146),
+    7.5: (57, 140, 132),
+    10.0: (56, 152, 118),
+    12.5: (44, 150, 93),
+    15.0: (32, 147, 68),
+    17.5: (20, 144, 43),
+}
+_P3G_FROM_20 = {
+    20.0: (8, 142, 18, 255),
+    22.5: (4, 159, 9, 255),
+    25.0: (0, 176, 0, 255),
+    27.5: (10, 187, 0, 255),
+    30.0: (20, 198, 0, 255),
+    32.0: (255, 246, 0, 255),
+    32.5: (255, 237, 0, 255),
+    35.0: (255, 194, 0, 255),
+    37.5: (255, 151, 0, 255),
+    40.0: (255, 108, 0, 255),
+    42.5: (255, 87, 0, 255),
+    45.0: (255, 66, 0, 255),
+    47.5: (255, 44, 0, 255),
+    48.0: (255, 40, 0, 255),
+    50.0: (255, 0, 0, 255),
+    52.5: (222, 0, 0, 255),
+    55.0: (189, 0, 0, 255),
+    56.0: (176, 0, 0, 255),
+    57.5: (172, 0, 18, 255),
+    60.0: (164, 0, 48, 255),
+    62.5: (210, 0, 152, 255),
+    65.0: (255, 0, 255, 255),
+    67.5: (255, 6, 255, 255),
+    70.0: (255, 12, 255, 255),
+    72.5: (255, 134, 255, 255),
+    75.0: (255, 255, 255, 255),
+}
+
+
+def _hue(rgb) -> float:
+    r, g, b = (c / 255.0 for c in rgb[:3])
+    mx, mn = max(r, g, b), min(r, g, b)
+    span = mx - mn
+    if span == 0:
+        return 0.0
+    if mx == r:
+        sector = ((g - b) / span) % 6
+    elif mx == g:
+        sector = (b - r) / span + 2
+    else:
+        sector = (r - g) / span + 4
+    return sector * 60.0
+
+
+def _first_ordinary_green(pal) -> float:
+    """First 0.1 dBZ step that reads as ordinary green, not cyan or blue-green."""
+    for step_i in range(0, 251):
+        dbz = step_i / 10.0
+        rgba = _rgba(pal, dbz)
+        r, g, b = rgba[:3]
+        if _hue(rgba) <= 140.0 and g > b and g > r and b < 90:
+            return dbz
+    raise AssertionError("ordinary green never arrived")
+
+
+def test_rala_p3h_weak_band_leaves_p3g_cores_and_stays_continuous():
+    """Lowest valid dBZ stays cooler than p3g. From 20 up the p3g RGB stays."""
     pal = load_palette("mpwg-rala-2026-09")
     for dbz in (20.0, 25.0, 30.0, 32.0, 40.0, 48.0, 50.0, 56.0, 60.0, 65.0, 70.0):
         assert _rgba(pal, dbz)[:3] == _P3F_RGB[dbz], dbz
-    # 2 and 10 are no longer the p3f green taps.
+    for dbz, rgba in _P3G_FROM_20.items():
+        assert _rgba(pal, dbz) == rgba, dbz
+    # 2 and 10 are no longer the p3f green taps, and they are bluer than p3g.
     assert _rgba(pal, 2.0)[2] >= _P3F_RGB[2.0][2] + 80
-    assert _rgba(pal, 2.0)[1] <= _P3F_RGB[2.0][1] - 15
+    assert _rgba(pal, 2.0)[2] > _rgba(pal, 2.0)[1]
     assert _rgba(pal, 10.0)[2] >= _P3F_RGB[10.0][2] + 40
     assert _rgba(pal, 10.0)[1] - _rgba(pal, 10.0)[2] < _P3F_RGB[10.0][1] - _P3F_RGB[10.0][2]
+    for dbz, rgb in _P3G_WEAK_RGB.items():
+        got = _rgba(pal, dbz)
+        assert got[2] > rgb[2], (dbz, got, rgb)
+        if dbz >= 5.0:
+            assert got[1] - got[2] < rgb[1] - rgb[2], (dbz, got, rgb)
+    # p3g was ordinary green by 15 dBZ (hue 139, blue 68). p3h is still
+    # blue-green there, and ordinary green waits until after 17.5.
+    assert _hue(_rgba(pal, 15.0)) > 155
+    assert _rgba(pal, 15.0)[2] > 110
+    assert _hue(_rgba(pal, 17.5)) > 140
+    assert _first_ordinary_green(pal) > 17.5
     assert _chroma(_rgba(pal, 25.0)) >= _chroma(_P3D_RGB[25.0]) + 30
     assert _rgba(pal, 40.0)[1] <= _P3D_RGB[40.0][1] - 30
     assert _chroma(_rgba(pal, 48.0)) > _chroma(_P3D_RGB[48.0])

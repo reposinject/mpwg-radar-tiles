@@ -45,7 +45,7 @@ Env (also accepted as unprefixed `REGION` / `BBOX`):
 | `MPWG_MODES` | `clean` | `clean`, or `clean,standard,all` |
 | `MPWG_PRODUCT` | `composite` | Manual cook default. Leave `composite` in `/etc/mpwg-radar.env`. The RALA unit sets `rala` for that process only. |
 | `MPWG_DISPLAY_MIN_DBZ` | (palette JSON) | Optional display cutoff override. Composite JSON=15, RALA JSON=-32. |
-| `MPWG_PALETTE` | (per product) | Optional. Composite `mpwg-clean-2026-09`; RALA `mpwg-rala-2026-09` (version `2026-09-rala-p3g`). |
+| `MPWG_PALETTE` | (per product) | Optional. Composite `mpwg-clean-2026-09`; RALA `mpwg-rala-2026-09` (version `2026-09-rala-p3h`). |
 | `MPWG_RETENTION_FRAMES` | `30` | Composite frame cap (count only, no age limit). |
 | `MPWG_RALA_RETENTION_MINUTES` | `75` | RALA rolling window. Age is the operating limit (≥60-minute loop). |
 | `MPWG_RALA_RETENTION_FRAMES` | `60` | RALA safety ceiling, above ~38 frames at a 2-minute cadence over 75 minutes. |
@@ -105,9 +105,9 @@ Stops live in `src/mpwg_radar/palettes/mpwg-clean-2026-09.json`. `colorbar.png` 
 
 ### RALA palette and render (Phase 3, test product)
 
-The echo footprint already lined up with RadarScope, so the RALA source is unchanged (`ReflectivityAtLowestAltitude`, param 57). QC and the no-echo / missing mask are unchanged. `2026-09-rala-p3g` is a cooker stamp on top of p3f: the lowest valid colors move from one green family into a muted cool blue and then a light blue-green, and the masked-splat color kernel widens one step (0.35 → 0.44 cell). Occupancy, disc, peak-pull, and radius stay at the p3d values. A cook repaints frames that still carry p3f.
+The echo footprint already lined up with RadarScope, so the RALA source is unchanged (`ReflectivityAtLowestAltitude`, param 57). QC and the no-echo / missing mask are unchanged. `2026-09-rala-p3h` is a cooker LUT stamp on p3g. The weak band holds faint blue-gray, pale blue, cool blue, cyan, and blue-green further up, and ordinary green starts later than p3g. Masked-splat color sigma stays at the p3g value, 0.44 cell. Occupancy, disc, peak-pull, and radius stay at the p3d values. A cook repaints frames that still carry p3g.
 
-RALA tiles use `src/mpwg_radar/palettes/mpwg-rala-2026-09.json` (version `2026-09-rala-p3g`). Color is a **piecewise** RGBA interpolation on actual dBZ (0.1 dBZ LUT, half-up index, no rescale). Calibration anchors near **2, 10, 20, 25, 32, 40, 48, 56, 65** dBZ. **Below 2** is a trace cool blue, **2–5** a muted cool blue, **7.5–10** a light blue-green, and **12.5–20** a weak green into the p3f deep green. **20–30** stays that opaque deep green, **30–40** bright yellow into strong gold, **40–50** gold into heavy orange, **50–60** vivid red into a dark red core, and **60–65+** pink into magenta into a hot extreme that holds past 65 before white at 75. Stops every 2.5 dBZ keep a calibration strip from collapsing a family onto one swatch. There is no bright cyan/aqua stop and no post-RGBA blur. The strip and `color-diag` call `palette.colorize`, the same LUT the tiles use.
+RALA tiles use `src/mpwg_radar/palettes/mpwg-rala-2026-09.json` (version `2026-09-rala-p3h`). Color is a **piecewise** RGBA interpolation on actual dBZ (0.1 dBZ LUT, half-up index, no rescale). Calibration anchors near **2, 10, 20, 25, 32, 40, 48, 56, 65** dBZ. **Below 0** is a faint blue-gray, **0–2** a pale blue, **2–5** a light blue into cool blue, **7.5–12.5** cyan, **15** blue-green, and **17.5–20** a weak green into the locked p3g deep green. **20–30** stays that opaque deep green, **30–40** bright yellow into strong gold, **40–50** gold into heavy orange, **50–60** vivid red into a dark red core, and **60–65+** pink into magenta into a hot extreme that holds past 65 before white at 75. Stops every 2.5 dBZ keep a calibration strip from collapsing a family onto one swatch. The weak cyan is muted, not a bright clear-air aqua, and there is no post-RGBA blur. The strip and `color-diag` call `palette.colorize`, the same LUT the tiles use.
 
 Valid-dBZ alpha follows `56 + 199 * t²` through 10 dBZ, then a smoothstep to 255 at 20. Weak returns stay visible and quiet. From 20 dBZ up — deep green, yellow, gold, orange, red, and magenta — the LUT is fully opaque. There is no transparent cutoff at 10 dBZ. No-echo and missing stay alpha 0 via the category mask, not via that ramp.
 
@@ -115,16 +115,16 @@ Valid-dBZ alpha follows `56 + 199 * t²` through 10 dBZ, then a smoothstep to 25
 
 | dBZ | Hex | R | G | B | A | Look |
 | --- | --- | --- | --- | --- | --- | --- |
-| -32 | `#122A46` | 18 | 42 | 70 | 56 | faintest valid wisp |
-| 0 | `#386C9D` | 56 | 108 | 157 | 119 | trace cool blue |
-| 2 | `#3A70A2` | 58 | 112 | 162 | 127 | cool blue |
-| 2.5 | `#3A729F` | 58 | 114 | 159 | 129 | cool blue |
-| 5 | `#397F92` | 57 | 127 | 146 | 140 | cool blue |
-| 7.5 | `#398C84` | 57 | 140 | 132 | 152 | light blue-green |
-| 10 | `#389876` | 56 | 152 | 118 | 165 | light blue-green |
-| 12.5 | `#2C965D` | 44 | 150 | 93 | 179 | weak green |
-| 15 | `#209344` | 32 | 147 | 68 | 210 | weak green |
-| 17.5 | `#14902B` | 20 | 144 | 43 | 241 | weak green |
+| -32 | `#303E50` | 48 | 62 | 80 | 56 | faint blue-gray wisp |
+| 0 | `#769CC4` | 118 | 156 | 196 | 119 | pale blue |
+| 2 | `#548ACE` | 84 | 138 | 206 | 127 | light blue |
+| 2.5 | `#4D86CF` | 77 | 134 | 207 | 129 | light blue |
+| 5 | `#2A70D6` | 42 | 112 | 214 | 140 | cool blue |
+| 7.5 | `#1C9CD0` | 28 | 156 | 208 | 152 | cool blue |
+| 10 | `#12ACC6` | 18 | 172 | 198 | 165 | cyan |
+| 12.5 | `#10AEAA` | 16 | 174 | 170 | 179 | cyan |
+| 15 | `#0EA680` | 14 | 166 | 128 | 210 | blue-green |
+| 17.5 | `#0B9A49` | 11 | 154 | 73 | 241 | weak green |
 | 20 | `#088E12` | 8 | 142 | 18 | 255 | weak green |
 | 22.5 | `#049F09` | 4 | 159 | 9 | 255 | rich green |
 | 25 | `#00B000` | 0 | 176 | 0 | 255 | rich green |
@@ -177,9 +177,9 @@ python3 -m mpwg_radar cook --product rala --region central-texas \
   --source synthetic --no-upload --out output/rala-phase2
 ```
 
-Tiles: `output/rala-phase2/radar/rala/clean/latest/{z}/{x}/{y}.png`. Storm edges should stop at the echo mask. The outer part of a boundary cell feathers; the cell center stays opaque, and clear-air neighbors stay empty. A 25 dBZ cell beside no-echo stays near 25 dBZ (no invented 18/12/6 fringe). Inside the squall, neighboring cells grade across their shared face and a hot core stays in its own color family. `frame.json` `valid_time` is still the frame time. `mode_spec.sample` is `masked-splat`, `mode_spec.smooth_kind` is `masked-splat`, and `mode_spec.despeckle` is false. `display_min_dbz` is -32. Palette version on that frame is `2026-09-rala-p3g`.
+Tiles: `output/rala-phase2/radar/rala/clean/latest/{z}/{x}/{y}.png`. Storm edges should stop at the echo mask. The outer part of a boundary cell feathers; the cell center stays opaque, and clear-air neighbors stay empty. A 25 dBZ cell beside no-echo stays near 25 dBZ (no invented 18/12/6 fringe). Inside the squall, neighboring cells grade across their shared face and a hot core stays in its own color family. `frame.json` `valid_time` is still the frame time. `mode_spec.sample` is `masked-splat`, `mode_spec.smooth_kind` is `masked-splat`, and `mode_spec.despeckle` is false. `display_min_dbz` is -32. Palette version on that frame is `2026-09-rala-p3h`.
 
-`python3 -m mpwg_radar color-diag` prints this p3g stop table through `palette.colorize`. Decade pairs (22 vs 29, 31 vs 39, 41 vs 49) stay distinct. That check is the color ramp, not the spatial resample.
+`python3 -m mpwg_radar color-diag` prints this p3h stop table through `palette.colorize`. Decade pairs (22 vs 29, 31 vs 39, 41 vs 49) stay distinct. That check is the color ramp, not the spatial resample.
 
 ## Layout
 

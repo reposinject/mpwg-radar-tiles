@@ -3,14 +3,15 @@
 The cooker always stores/resamples reflectivity in dBZ. This module is the
 only place that applies a palette. Composite uses the MPWG Clean palette
 (James, Sep 2026): values below 15 dBZ are transparent. RALA uses palette
-revision 2026-09-rala-p3e. Stops are a piecewise RGBA ramp on actual dBZ
-(0.1 dBZ LUT, half-up index, no rescale). The p3e anchors are richer
-descendants of the RadarScope taps: subtle through 10, weak through 20,
-rich green through 30, yellow into gold through 40, gold into orange
-through 50, red into deep red through 60, then pink into magenta into a
-hot extreme. Valid weak returns use a continuous alpha ramp (no cutoff at
-10 dBZ). colorize() does not mutate the input array. The calibration strip
-and the dBZ probe call that same colorize().
+revision 2026-09-rala-p3f. Stops are a piecewise RGBA ramp on actual dBZ
+(0.1 dBZ LUT, half-up index, no rescale). The p3f anchors keep the
+RadarScope weak taps and push the mid/high bands: subtle through 10, weak
+through 20, richer green through 30, vivid yellow into gold through 40,
+gold into strong orange through 50, vivid red into deep red through 60,
+then pink into magenta into a hot extreme. Valid weak returns use a
+continuous alpha ramp (no cutoff at 10 dBZ). colorize() does not mutate
+the input array. The calibration strip and the dBZ probe call that same
+colorize().
 Transparency for no-echo and missing is a category mask, not a dBZ cutoff,
 except for the palette display_min.
 """
@@ -70,29 +71,31 @@ FAMILY_PROOF_PAIRS: Tuple[Tuple[float, float], ...] = (
     (41.0, 49.0),
 )
 
-# p3e retunes the cooker LUT. Spatial sigmas stay at the p3d values.
-RALA_PALETTE_VERSION = "2026-09-rala-p3e"
+# p3f retunes the cooker LUT. Spatial sigmas stay at the p3d values.
+RALA_PALETTE_VERSION = "2026-09-rala-p3f"
 
 # RGB control points. Alpha is not stored here; rala_opacity() supplies it.
-# Weak taps are the RadarScope samples (2.0 and the old 10.3 green, now on
-# 10). Stronger anchors are those same families with the mud pulled out:
-# richer green, yellow finished into gold, orange hotter, the red core held
-# through 60 (p3d was already pink at 56.4), magenta hotter, extreme held
-# past 65 instead of washing out by 70.
+# 2 and 10 stay the RadarScope taps (2.0 and the old 10.3 green). p3e was
+# still muddy above that: greens carried extra red/blue, 32 was a dim lemon,
+# 40–48 never left yellow-orange, and 50–60 collapsed into one dark red
+# (56 and 60 were 13 counts apart). p3f keeps the weak band quiet and lifts
+# saturation with dBZ: purer greens, a clean yellow into deeper gold, a
+# strong orange, then a vivid-to-deep red whose core actually spreads,
+# then a hotter magenta that does not wash out by 70.
 _RALA_SAMPLE_RGB: Tuple[Tuple[float, Tuple[int, int, int]], ...] = (
     (2.0, (28, 138, 48)),
     (10.0, (46, 158, 60)),
-    (20.0, (50, 182, 58)),
-    (25.0, (36, 208, 50)),
-    (30.0, (116, 216, 40)),
-    (32.0, (232, 220, 12)),
-    (40.0, (252, 176, 4)),
-    (48.0, (252, 108, 16)),
-    (50.0, (228, 28, 18)),
-    (56.0, (196, 10, 24)),
-    (60.0, (192, 6, 36)),
-    (65.0, (246, 18, 232)),
-    (70.0, (255, 72, 248)),
+    (20.0, (46, 180, 52)),
+    (25.0, (24, 220, 28)),
+    (30.0, (92, 230, 18)),
+    (32.0, (255, 232, 0)),
+    (40.0, (255, 154, 0)),
+    (48.0, (255, 84, 0)),
+    (50.0, (255, 32, 0)),
+    (56.0, (232, 0, 28)),
+    (60.0, (210, 0, 64)),
+    (65.0, (255, 0, 236)),
+    (70.0, (255, 32, 255)),
 )
 # Bookends. -32 keeps the existing dark-green wisp. 75 is the white extreme.
 _RALA_FLOOR_DBZ = -32.0
@@ -393,8 +396,8 @@ def _color_on_controls(dbz: float, controls: Sequence[Tuple[float, RGBA]]) -> RG
     return controls[-1][1]
 
 
-def derive_rala_p3e_stops() -> List[PaletteStop]:
-    """Dense p3e stops. Anchor RGB is the control table; in-between stops are computed.
+def derive_rala_p3f_stops() -> List[PaletteStop]:
+    """Dense p3f stops. Anchor RGB is the control table; in-between stops are computed.
 
     Stops sit on every 2.5 dBZ from 0 through 75, plus the calibration
     anchors, the 24.8 dBZ opaque knot, the -32 wisp, and white at 75.
@@ -426,29 +429,31 @@ def derive_rala_p3e_stops() -> List[PaletteStop]:
     return stops
 
 
-def rala_p3e_document() -> dict:
-    stops = derive_rala_p3e_stops()
+def rala_p3f_document() -> dict:
+    stops = derive_rala_p3f_stops()
     return {
         "id": "mpwg-rala-2026-09",
         "name": "MPWG RALA",
         "author": "James",
         "version": RALA_PALETTE_VERSION,
         "description": (
-            "Phase 3e cooker LUT (2026-09-rala-p3e). Piecewise RGBA on actual "
+            "Phase 3f cooker LUT (2026-09-rala-p3f). Piecewise RGBA on actual "
             "dBZ, 0.1 dBZ LUT, half-up, no rescale. Anchors near 2, 10, 25, "
-            "32, 40, 48, 56, and 65 dBZ are richer descendants of the "
-            "RadarScope taps. 0.1–10 stays the subtle green, 10–20 stays "
-            "weak, 20–30 is a richer green, 30–40 runs yellow into gold, "
-            "40–50 gold into orange, 50–60 red into deep red, and 60–65+ "
-            "pink into magenta into a hot extreme that holds past 65 before "
-            "white at 75. Dense stops every 2.5 dBZ keep a calibration strip "
-            "from collapsing a family onto one swatch. Alpha for valid dBZ "
-            "is 56 + 199*t^2 from -32 to 24.8, then 255 — visible and subtle "
-            "below 10, with no transparent cutoff at 10. No-echo and missing "
-            "stay alpha 0 via the category mask. No cyan/aqua stop. "
-            "display_min_dbz=-32. Composite keeps mpwg-clean-2026-09. The "
-            "calibration strip and the dBZ probe call palette.colorize, the "
-            "same LUT the tiles use."
+            "32, 40, 48, 56, and 65 dBZ. 0.1–10 stays the subtle RadarScope "
+            "green (the 2 dBZ and old 10.3 taps), 10–20 stays a subdued weak "
+            "green, 20–30 climbs through progressively richer greens, 30–40 "
+            "runs vivid yellow into gold, 40–50 gold into strong orange, "
+            "50–60 vivid red into deep red with a wider core spread than "
+            "p3e, and 60–65+ pink into magenta into a hot extreme that holds "
+            "past 65 before white at 75. Mid and high bands are more "
+            "saturated than p3e; weak returns are not. Dense stops every "
+            "2.5 dBZ keep a calibration strip from collapsing a family onto "
+            "one swatch. Alpha for valid dBZ is 56 + 199*t^2 from -32 to "
+            "24.8, then 255 — visible and subtle below 10, with no "
+            "transparent cutoff at 10. No-echo and missing stay alpha 0 via "
+            "the category mask. No cyan/aqua stop. display_min_dbz=-32. "
+            "Composite keeps mpwg-clean-2026-09. The calibration strip and "
+            "the dBZ probe call palette.colorize, the same LUT the tiles use."
         ),
         "units": "dBZ",
         "display_min_dbz": -32,

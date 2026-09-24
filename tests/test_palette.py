@@ -110,17 +110,18 @@ def test_colorbar_starts_at_display_cutoff():
     assert arr[0, -1, 3] == 255
 
 
-# p3e calibration anchors. Weak taps are the RadarScope samples; the rest are
-# those families with the mud taken out. Alpha is still the continuous ramp.
+# p3f calibration anchors. 2 and 10 stay the RadarScope taps. Mid and high
+# bands are the p3e families with the remaining mud pulled out. Alpha is
+# still the continuous ramp.
 RALA_ANCHOR_RGB = {
     2.0: (28, 138, 48),
     10.0: (46, 158, 60),
-    25.0: (36, 208, 50),
-    32.0: (232, 220, 12),
-    40.0: (252, 176, 4),
-    48.0: (252, 108, 16),
-    56.0: (196, 10, 24),
-    65.0: (246, 18, 232),
+    25.0: (24, 220, 28),
+    32.0: (255, 232, 0),
+    40.0: (255, 154, 0),
+    48.0: (255, 84, 0),
+    56.0: (232, 0, 28),
+    65.0: (255, 0, 236),
 }
 
 # colorize() of 2026-09-rala-p3d at the same dBZ. Cores must beat these.
@@ -139,12 +140,12 @@ def _chroma(rgb) -> int:
 
 
 def test_rala_piecewise_anchors_match_stops():
-    from mpwg_radar.palette import RALA_PALETTE_VERSION, derive_rala_p3e_stops
+    from mpwg_radar.palette import RALA_PALETTE_VERSION, derive_rala_p3f_stops
 
     pal = load_palette("mpwg-rala-2026-09")
-    assert pal.version == RALA_PALETTE_VERSION == "2026-09-rala-p3e"
+    assert pal.version == RALA_PALETTE_VERSION == "2026-09-rala-p3f"
     assert pal.min_dbz == -32.0
-    derived = derive_rala_p3e_stops()
+    derived = derive_rala_p3f_stops()
     assert [stop.dbz for stop in pal.stops] == [stop.dbz for stop in derived]
     assert [stop.rgba for stop in pal.stops] == [stop.rgba for stop in derived]
     for stop in pal.stops:
@@ -250,8 +251,30 @@ def test_rala_anchor_feel_and_no_cyan():
         assert stop.hex.upper() == "#{:02X}{:02X}{:02X}".format(*stop.rgba[:3])
 
 
-def test_rala_p3e_cores_pop_more_than_p3d_and_stay_continuous():
-    """Strong anchors are richer than p3d. The 0.1 dBZ LUT does not bucket."""
+# colorize() of 2026-09-rala-p3e at the bands James still called muted.
+_P3E_RGB = {
+    2.0: (28, 138, 48),
+    10.0: (46, 158, 60),
+    20.0: (50, 182, 58),
+    25.0: (36, 208, 50),
+    30.0: (116, 216, 40),
+    32.0: (232, 220, 12),
+    40.0: (252, 176, 4),
+    48.0: (252, 108, 16),
+    50.0: (228, 28, 18),
+    56.0: (196, 10, 24),
+    60.0: (192, 6, 36),
+    65.0: (246, 18, 232),
+    70.0: (255, 72, 248),
+}
+
+
+def _rgb_dist(a, b) -> float:
+    return float(np.linalg.norm(np.array(a[:3], dtype=np.float64) - np.array(b[:3], dtype=np.float64)))
+
+
+def test_rala_p3f_cores_pop_more_than_p3e_and_stay_continuous():
+    """Mid/high anchors are richer than p3e. Weak taps and the 0.1 dBZ LUT stay."""
     pal = load_palette("mpwg-rala-2026-09")
     assert _chroma(_rgba(pal, 25.0)) >= _chroma(_P3D_RGB[25.0]) + 30
     assert _rgba(pal, 40.0)[1] <= _P3D_RGB[40.0][1] - 30
@@ -259,9 +282,25 @@ def test_rala_p3e_cores_pop_more_than_p3d_and_stay_continuous():
     assert _rgba(pal, 56.0)[2] < 50 and _P3D_RGB[56.0][2] > 100
     assert _chroma(_rgba(pal, 65.0)) >= _chroma(_P3D_RGB[65.0]) + 40
     assert _chroma(_rgba(pal, 70.0)) >= _chroma(_P3D_RGB[70.0]) + 70
-    # Weak echoes stay on the old taps.
-    assert _rgba(pal, 2.0)[:3] == (28, 138, 48)
+    # Weak echoes stay on the RadarScope taps. Through 10 dBZ nothing moves.
+    assert _rgba(pal, 2.0)[:3] == _P3E_RGB[2.0]
+    assert _rgba(pal, 10.0)[:3] == _P3E_RGB[10.0]
     assert max(abs(a - b) for a, b in zip(_rgba(pal, 10.0)[:3], (45, 157, 60))) <= 2
+    for dbz in (25.0, 32.0, 40.0, 48.0, 50.0, 56.0, 60.0, 65.0, 70.0):
+        assert _chroma(_rgba(pal, dbz)) > _chroma(_P3E_RGB[dbz]), dbz
+    # Gold and orange actually leave yellow. The red core is no longer one swatch.
+    assert _rgba(pal, 40.0)[1] <= _P3E_RGB[40.0][1] - 15
+    assert _rgba(pal, 48.0)[1] <= _P3E_RGB[48.0][1] - 15
+    assert _rgba(pal, 50.0)[0] >= _P3E_RGB[50.0][0] + 20
+    assert _rgba(pal, 56.0)[0] >= _P3E_RGB[56.0][0] + 20
+    assert _rgb_dist(_rgba(pal, 50.0), _rgba(pal, 56.0)) > _rgb_dist(_P3E_RGB[50.0], _P3E_RGB[56.0])
+    assert _rgb_dist(_rgba(pal, 56.0), _rgba(pal, 60.0)) >= _rgb_dist(
+        _P3E_RGB[56.0], _P3E_RGB[60.0]
+    ) + 20
+    # 10–20 stays subdued: quieter than the rich green, not a second neon.
+    assert _rgba(pal, 20.0)[1] < 190
+    assert _chroma(_rgba(pal, 20.0)) <= _chroma(_P3E_RGB[20.0]) + 15
+    assert _chroma(_rgba(pal, 25.0)) >= _chroma(_rgba(pal, 20.0)) + 40
 
     prev = None
     for step_i in range(-320, 751):

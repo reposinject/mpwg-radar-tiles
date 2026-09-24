@@ -107,9 +107,9 @@ Stops live in `src/mpwg_radar/palettes/mpwg-clean-2026-09.json`. `colorbar.png` 
 
 The echo footprint already lined up with RadarScope, so the RALA source is unchanged (`ReflectivityAtLowestAltitude`, param 57). QC and the no-echo / missing mask are unchanged. Spatial splat sigmas stay at the p3d values. `2026-09-rala-p3f` is a cooker-LUT stamp: the dBZ→RGBA stops were recalibrated again, so a cook repaints frames that still carry p3e.
 
-RALA tiles use `src/mpwg_radar/palettes/mpwg-rala-2026-09.json` (version `2026-09-rala-p3f`). Color is a **piecewise** RGBA interpolation on actual dBZ (0.1 dBZ LUT, half-up index, no rescale). Calibration anchors near **2, 10, 25, 32, 40, 48, 56, 65** dBZ keep the RadarScope weak taps and push the mid and high bands past p3e. **0.1–10** stays subtle green (the 2 dBZ and old 10.3 taps), **10–20** stays a subdued weak green, **20–30** climbs through progressively richer greens, **30–40** runs vivid yellow into gold, **40–50** gold into strong orange, **50–60** vivid red into deep red with a wider core spread, and **60–65+** pink into magenta into a hot extreme that holds past 65 before white at 75. Stops every 2.5 dBZ keep a calibration strip from collapsing a family onto one swatch. There is no cyan/aqua stop and no post-RGBA blur. The strip and `color-diag` call `palette.colorize`, the same LUT the tiles use.
+RALA tiles use `src/mpwg_radar/palettes/mpwg-rala-2026-09.json` (version `2026-09-rala-p3f`). Color is a **piecewise** RGBA interpolation on actual dBZ (0.1 dBZ LUT, half-up index, no rescale). Calibration anchors near **2, 10, 25, 32, 40, 48, 56, 65** dBZ keep the RadarScope weak taps and push the mid and high bands past p3e. **0.1–10** stays subtle green (the 2 dBZ and old 10.3 taps), **10–20** rises into a subdued deep green, **20–30** is an opaque deep green, **30–40** runs bright yellow into strong gold, **40–50** gold into heavy orange, **50–60** vivid red into a dark red core, and **60–65+** pink into magenta into a hot extreme that holds past 65 before white at 75. Stops every 2.5 dBZ keep a calibration strip from collapsing a family onto one swatch. There is no cyan/aqua stop and no post-RGBA blur. The strip and `color-diag` call `palette.colorize`, the same LUT the tiles use.
 
-Valid-dBZ alpha is `56 + 199 * t²` with `t` running from -32 to 24.8, then 255. Weak returns stay visible and quieter than the opaque greens. There is no transparent cutoff at 10 dBZ. No-echo and missing stay alpha 0 via the category mask, not via that ramp.
+Valid-dBZ alpha follows `56 + 199 * t²` through 10 dBZ, then a smoothstep to 255 at 20. Weak returns stay visible and quiet. From 20 dBZ up — deep green, yellow, gold, orange, red, and magenta — the LUT is fully opaque. There is no transparent cutoff at 10 dBZ. No-echo and missing stay alpha 0 via the category mask, not via that ramp.
 
 `python3 -m mpwg_radar color-diag` prints this stop table and the probe trace (input dBZ → decoded float32 → normalized, which is identity → LUT index → RGB → alpha → RGBA) through `palette.colorize`.
 
@@ -122,37 +122,35 @@ Valid-dBZ alpha is `56 + 199 * t²` with `t` running from -32 to 24.8, then 255.
 | 5 | `#239234` | 35 | 146 | 52 | 140 | subtle green |
 | 7.5 | `#289838` | 40 | 152 | 56 | 152 | subtle green |
 | 10 | `#2E9E3C` | 46 | 158 | 60 | 165 | subtle green |
-| 12.5 | `#2EA43A` | 46 | 164 | 58 | 178 | weak green |
-| 15 | `#2EA938` | 46 | 169 | 56 | 192 | weak green |
-| 17.5 | `#2EAE36` | 46 | 174 | 54 | 207 | weak green |
-| 20 | `#2EB434` | 46 | 180 | 52 | 223 | weak green |
-| 22.5 | `#23C828` | 35 | 200 | 40 | 239 | rich green |
-| 24.8 | `#19DA1D` | 25 | 218 | 29 | 255 | rich green |
-| 25 | `#18DC1C` | 24 | 220 | 28 | 255 | rich green |
-| 27.5 | `#3AE117` | 58 | 225 | 23 | 255 | rich green |
-| 30 | `#5CE612` | 92 | 230 | 18 | 255 | rich green |
-| 32 | `#FFE800` | 255 | 232 | 0 | 255 | yellow to gold |
-| 32.5 | `#FFE300` | 255 | 227 | 0 | 255 | yellow to gold |
-| 35 | `#FFCB00` | 255 | 203 | 0 | 255 | yellow to gold |
-| 37.5 | `#FFB200` | 255 | 178 | 0 | 255 | yellow to gold |
-| 40 | `#FF9A00` | 255 | 154 | 0 | 255 | yellow to gold |
-| 42.5 | `#FF8400` | 255 | 132 | 0 | 255 | gold to orange |
-| 45 | `#FF6E00` | 255 | 110 | 0 | 255 | gold to orange |
-| 47.5 | `#FF5800` | 255 | 88 | 0 | 255 | gold to orange |
-| 48 | `#FF5400` | 255 | 84 | 0 | 255 | gold to orange |
-| 50 | `#FF2000` | 255 | 32 | 0 | 255 | red to deep red |
-| 52.5 | `#F5130C` | 245 | 19 | 12 | 255 | red to deep red |
-| 55 | `#EC0517` | 236 | 5 | 23 | 255 | red to deep red |
-| 56 | `#E8001C` | 232 | 0 | 28 | 255 | red to deep red |
-| 57.5 | `#E0002A` | 224 | 0 | 42 | 255 | red to deep red |
-| 60 | `#D20040` | 210 | 0 | 64 | 255 | red to deep red |
-| 62.5 | `#E80096` | 232 | 0 | 150 | 255 | pink to magenta |
-| 65 | `#FF00EC` | 255 | 0 | 236 | 255 | pink to magenta |
-| 67.5 | `#FF10F6` | 255 | 16 | 246 | 255 | magenta extreme |
-| 70 | `#FF20FF` | 255 | 32 | 255 | 255 | magenta extreme |
-| 72.5 | `#FF90FF` | 255 | 144 | 255 | 255 | magenta toward white |
+| 12.5 | `#249A32` | 36 | 154 | 50 | 179 | weak green |
+| 15 | `#1B9627` | 27 | 150 | 39 | 210 | weak green |
+| 17.5 | `#12921C` | 18 | 146 | 28 | 241 | weak green |
+| 20 | `#088E12` | 8 | 142 | 18 | 255 | weak green |
+| 22.5 | `#049F09` | 4 | 159 | 9 | 255 | rich green |
+| 25 | `#00B000` | 0 | 176 | 0 | 255 | rich green |
+| 27.5 | `#0ABB00` | 10 | 187 | 0 | 255 | rich green |
+| 30 | `#14C600` | 20 | 198 | 0 | 255 | rich green |
+| 32 | `#FFF600` | 255 | 246 | 0 | 255 | yellow to gold |
+| 32.5 | `#FFED00` | 255 | 237 | 0 | 255 | yellow to gold |
+| 35 | `#FFC200` | 255 | 194 | 0 | 255 | yellow to gold |
+| 37.5 | `#FF9700` | 255 | 151 | 0 | 255 | yellow to gold |
+| 40 | `#FF6C00` | 255 | 108 | 0 | 255 | yellow to gold |
+| 42.5 | `#FF5700` | 255 | 87 | 0 | 255 | gold to orange |
+| 45 | `#FF4200` | 255 | 66 | 0 | 255 | gold to orange |
+| 47.5 | `#FF2C00` | 255 | 44 | 0 | 255 | gold to orange |
+| 48 | `#FF2800` | 255 | 40 | 0 | 255 | gold to orange |
+| 50 | `#FF0000` | 255 | 0 | 0 | 255 | red to deep red |
+| 52.5 | `#DE0000` | 222 | 0 | 0 | 255 | red to deep red |
+| 55 | `#BD0000` | 189 | 0 | 0 | 255 | red to deep red |
+| 56 | `#B00000` | 176 | 0 | 0 | 255 | red to deep red |
+| 57.5 | `#AC0012` | 172 | 0 | 18 | 255 | red to deep red |
+| 60 | `#A40030` | 164 | 0 | 48 | 255 | red to deep red |
+| 62.5 | `#D20098` | 210 | 0 | 152 | 255 | pink to magenta |
+| 65 | `#FF00FF` | 255 | 0 | 255 | 255 | pink to magenta |
+| 67.5 | `#FF06FF` | 255 | 6 | 255 | 255 | magenta extreme |
+| 70 | `#FF0CFF` | 255 | 12 | 255 | 255 | magenta extreme |
+| 72.5 | `#FF86FF` | 255 | 134 | 255 | 255 | magenta toward white |
 | 75 | `#FFFFFF` | 255 | 255 | 255 | 255 | white extreme |
-
 **Anti-bloom rule:** a pixel is colored only when its nearest MRMS cell is real echo. A clear-air cell next to a core stays empty. Inside the echo, alpha insets the square rim over the outer part of the boundary cell, so the 0.01° grid is not a hard mosaic and the rest of the cell stays opaque. dBZ is a local resample of valid neighbors only: shared faces grade, cell centers stay near the source value, and a 25 dBZ cell beside no-echo does not become a 25→18→12→6 ramp. A single weak cell is still drawn (a small disc), not deleted and not cut off below 15 dBZ. No-echo and missing stay alpha 0. Composite tiles stay nearest-neighbor with the Clean palette.
 
 ### RALA frame archive (Phase 3)

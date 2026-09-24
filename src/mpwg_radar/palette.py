@@ -5,11 +5,11 @@ only place that applies a palette. Composite uses the MPWG Clean palette
 (James, Sep 2026): values below 15 dBZ are transparent. RALA uses palette
 revision 2026-09-rala-p3f. Stops are a piecewise RGBA ramp on actual dBZ
 (0.1 dBZ LUT, half-up index, no rescale). The p3f anchors keep the
-RadarScope weak taps and push the mid/high bands: subtle through 10, weak
-through 20, richer green through 30, vivid yellow into gold through 40,
-gold into strong orange through 50, vivid red into deep red through 60,
-then pink into magenta into a hot extreme. Valid weak returns use a
-continuous alpha ramp (no cutoff at 10 dBZ). colorize() does not mutate
+RadarScope weak taps and push the mid/high bands: subtle through 10, deep
+green through 30, bright yellow into strong gold through 40, gold into
+heavy orange through 50, vivid red into a dark red core through 60, then
+pink into magenta into a hot extreme. Alpha stays on the quiet curve
+through 10 dBZ and is fully opaque from 20 up. colorize() does not mutate
 the input array. The calibration strip and the dBZ probe call that same
 colorize().
 Transparency for no-echo and missing is a category mask, not a dBZ cutoff,
@@ -75,39 +75,39 @@ FAMILY_PROOF_PAIRS: Tuple[Tuple[float, float], ...] = (
 RALA_PALETTE_VERSION = "2026-09-rala-p3f"
 
 # RGB control points. Alpha is not stored here; rala_opacity() supplies it.
-# 2 and 10 stay the RadarScope taps (2.0 and the old 10.3 green). p3e was
-# still muddy above that: greens carried extra red/blue, 32 was a dim lemon,
-# 40–48 never left yellow-orange, and 50–60 collapsed into one dark red
-# (56 and 60 were 13 counts apart). p3f keeps the weak band quiet and lifts
-# saturation with dBZ: purer greens, a clean yellow into deeper gold, a
-# strong orange, then a vivid-to-deep red whose core actually spreads,
-# then a hotter magenta that does not wash out by 70.
+# 2 and 10 stay the RadarScope taps. James's retest of the same I-35 line
+# still showed pale greens/yellows and cores with almost no heavy orange or
+# dark red. From 20 up the greens are deep and pure, then bright yellow,
+# strong gold, heavy orange, vivid red, and a dark pure-red core. Magenta
+# stays hot past 65. Weak taps are not lifted.
 _RALA_SAMPLE_RGB: Tuple[Tuple[float, Tuple[int, int, int]], ...] = (
     (2.0, (28, 138, 48)),
     (10.0, (46, 158, 60)),
-    (20.0, (46, 180, 52)),
-    (25.0, (24, 220, 28)),
-    (30.0, (92, 230, 18)),
-    (32.0, (255, 232, 0)),
-    (40.0, (255, 154, 0)),
-    (48.0, (255, 84, 0)),
-    (50.0, (255, 32, 0)),
-    (56.0, (232, 0, 28)),
-    (60.0, (210, 0, 64)),
-    (65.0, (255, 0, 236)),
-    (70.0, (255, 32, 255)),
+    (20.0, (8, 142, 18)),
+    (25.0, (0, 176, 0)),
+    (30.0, (20, 198, 0)),
+    (32.0, (255, 246, 0)),
+    (40.0, (255, 108, 0)),
+    (48.0, (255, 40, 0)),
+    (50.0, (255, 0, 0)),
+    (56.0, (176, 0, 0)),
+    (60.0, (164, 0, 48)),
+    (65.0, (255, 0, 255)),
+    (70.0, (255, 12, 255)),
 )
 # Bookends. -32 keeps the existing dark-green wisp. 75 is the white extreme.
 _RALA_FLOOR_DBZ = -32.0
 _RALA_FLOOR_RGB = (16, 46, 20)
 _RALA_WHITE_DBZ = 75.0
 _RALA_WHITE_RGB = (255, 255, 255)
-# Opacity: visible at the floor, opaque at the medium-green sample. Gamma > 1
-# keeps single-digit dBZ subtler than a linear ramp from -32 without a step
-# at 10. alpha = FLOOR + (255-FLOOR) * t^GAMMA, t = (dbz-FLOOR)/(OPAQUE-FLOOR).
+# Opacity: the p3e gamma curve through 10 dBZ, so weak returns stay quiet.
+# A smoothstep then reaches 255 at 20. Yellow, gold, orange, red, and
+# magenta (and the deep greens they sit in) are fully opaque. No step at 10.
 _RALA_ALPHA_FLOOR = 56
-_RALA_ALPHA_OPAQUE_DBZ = 24.8
+_RALA_ALPHA_QUIET_DBZ = 10.0
+_RALA_ALPHA_QUIET_REF_DBZ = 24.8
 _RALA_ALPHA_GAMMA = 2.0
+_RALA_ALPHA_OPAQUE_DBZ = 20.0
 
 
 @dataclass(frozen=True)
@@ -307,22 +307,39 @@ def _round_u8(values: np.ndarray) -> np.ndarray:
     return np.clip(np.floor(arr + 0.5), 0, 255).astype(np.uint8)
 
 
+def _rala_quiet_alpha(dbz: float) -> float:
+    """p3e gamma curve. Used as-is through 10 dBZ, and as the smoothstep floor."""
+    if dbz >= _RALA_ALPHA_QUIET_REF_DBZ:
+        return 255.0
+    if dbz <= _RALA_FLOOR_DBZ:
+        return float(_RALA_ALPHA_FLOOR)
+    t = (float(dbz) - _RALA_FLOOR_DBZ) / (
+        _RALA_ALPHA_QUIET_REF_DBZ - _RALA_FLOOR_DBZ
+    )
+    span = 255 - _RALA_ALPHA_FLOOR
+    return _RALA_ALPHA_FLOOR + span * (t ** _RALA_ALPHA_GAMMA)
+
+
 def rala_opacity(dbz: float) -> int:
     """Continuous alpha for a valid RALA dBZ. No step at 10.
 
-    ``alpha = 56 + 199 * t^2`` with ``t`` running from -32 dBZ to 24.8 dBZ,
-    then 255. Single-digit returns stay visible and quieter than the opaque
-    greens. No-echo and missing do not use this; the category mask forces 0.
+    Through 10 dBZ this is the quiet curve ``56 + 199 * t^2`` (t from -32
+    to 24.8). From 10 to 20 a smoothstep runs that value up to 255, and
+    everything above 20 is opaque. Single-digit returns stay visible and
+    quieter than the storm greens. No-echo and missing do not use this;
+    the category mask forces 0.
     """
     if dbz >= _RALA_ALPHA_OPAQUE_DBZ:
         return 255
     if dbz <= _RALA_FLOOR_DBZ:
         return _RALA_ALPHA_FLOOR
-    t = (float(dbz) - _RALA_FLOOR_DBZ) / (
-        _RALA_ALPHA_OPAQUE_DBZ - _RALA_FLOOR_DBZ
-    )
-    span = 255 - _RALA_ALPHA_FLOOR
-    return int(round(_RALA_ALPHA_FLOOR + span * (t ** _RALA_ALPHA_GAMMA)))
+    if dbz <= _RALA_ALPHA_QUIET_DBZ:
+        return int(round(_rala_quiet_alpha(dbz)))
+    span_dbz = _RALA_ALPHA_OPAQUE_DBZ - _RALA_ALPHA_QUIET_DBZ
+    t = (float(dbz) - _RALA_ALPHA_QUIET_DBZ) / span_dbz
+    smooth = t * t * (3.0 - 2.0 * t)
+    a0 = _rala_quiet_alpha(_RALA_ALPHA_QUIET_DBZ)
+    return int(round(a0 + (255.0 - a0) * smooth))
 
 
 def _lerp_rgba(a: RGBA, b: RGBA, t: float) -> RGBA:
@@ -400,7 +417,7 @@ def derive_rala_p3f_stops() -> List[PaletteStop]:
     """Dense p3f stops. Anchor RGB is the control table; in-between stops are computed.
 
     Stops sit on every 2.5 dBZ from 0 through 75, plus the calibration
-    anchors, the 24.8 dBZ opaque knot, the -32 wisp, and white at 75.
+    anchors, the 20 dBZ opaque knot, the -32 wisp, and white at 75.
     Every segment is linear RGBA, which is the same interpolation
     ``Palette.colorize`` uses for tiles, the calibration strip, and the
     dBZ probe. Alpha on each stop is ``rala_opacity`` of that dBZ, then
@@ -440,20 +457,18 @@ def rala_p3f_document() -> dict:
             "Phase 3f cooker LUT (2026-09-rala-p3f). Piecewise RGBA on actual "
             "dBZ, 0.1 dBZ LUT, half-up, no rescale. Anchors near 2, 10, 25, "
             "32, 40, 48, 56, and 65 dBZ. 0.1–10 stays the subtle RadarScope "
-            "green (the 2 dBZ and old 10.3 taps), 10–20 stays a subdued weak "
-            "green, 20–30 climbs through progressively richer greens, 30–40 "
-            "runs vivid yellow into gold, 40–50 gold into strong orange, "
-            "50–60 vivid red into deep red with a wider core spread than "
-            "p3e, and 60–65+ pink into magenta into a hot extreme that holds "
-            "past 65 before white at 75. Mid and high bands are more "
-            "saturated than p3e; weak returns are not. Dense stops every "
-            "2.5 dBZ keep a calibration strip from collapsing a family onto "
-            "one swatch. Alpha for valid dBZ is 56 + 199*t^2 from -32 to "
-            "24.8, then 255 — visible and subtle below 10, with no "
-            "transparent cutoff at 10. No-echo and missing stay alpha 0 via "
-            "the category mask. No cyan/aqua stop. display_min_dbz=-32. "
-            "Composite keeps mpwg-clean-2026-09. The calibration strip and "
-            "the dBZ probe call palette.colorize, the same LUT the tiles use."
+            "green. 20–30 is an opaque deep green, 30–40 a bright yellow "
+            "into strong gold, 40–50 gold into heavy orange, 50–60 vivid red "
+            "into a dark red core, and 60–65+ pink into magenta into an "
+            "extreme that holds past 65 before white at 75. Those mid and "
+            "high stops are more saturated than p3e so cores read; weak "
+            "returns are not. Alpha follows 56 + 199*t^2 through 10 dBZ, "
+            "then a smoothstep to 255 at 20, so yellow, gold, orange, red, "
+            "and magenta are fully opaque. No cutoff at 10. No-echo and "
+            "missing stay alpha 0 via the category mask. No cyan/aqua stop. "
+            "display_min_dbz=-32. Composite keeps mpwg-clean-2026-09. The "
+            "calibration strip and the dBZ probe call palette.colorize, the "
+            "same LUT the tiles use."
         ),
         "units": "dBZ",
         "display_min_dbz": -32,

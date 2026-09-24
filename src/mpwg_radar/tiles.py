@@ -209,7 +209,11 @@ _DISC_KEEP_HI = np.float32(0.70)
 # sample, so 25 dBZ beside clear air does not become 18→12→6. A light peak
 # pull keeps a hot cell in its own color family when that local blend is
 # cooler. This is not a wide blur of the finished RGBA raster.
-_COLOR_SIGMA = 0.35
+# p3g widens only this kernel, 0.35 → 0.44 cell. Weight at one cell goes
+# from about 0.017 to about 0.076, so the flat MRMS interior grades across
+# more of the shared face. Occupancy, disc, peak-pull, and radius stay at
+# the p3d values. The retired wide kernel was 1.35.
+_COLOR_SIGMA = 0.44
 _PEAK_SIGMA = 0.32
 _PEAK_MIX = np.float32(0.45)
 _CORE_RISE = np.float32(10.0)

@@ -84,8 +84,8 @@ class ReflectivityFrame:
     """
 
     dbz: np.ndarray  # float32, NaN = not a valid reflectivity value
-    lat: np.ndarray  # (ny,) degrees, north → south or south → north
-    lon: np.ndarray  # (nx,) degrees in [-180, 180)
+    lat: np.ndarray  # (ny,) float64 degrees, north → south or south → north
+    lon: np.ndarray  # (nx,) float64 degrees in [-180, 180)
     valid_time: datetime
     product: str = "MergedReflectivityQCComposite"
     source: str = "NOAA MRMS"
@@ -354,10 +354,15 @@ def decode_grib2(
         int((category == CAT_MISSING).sum()),
         float(np.nanmax(dbz)) if np.isfinite(dbz).any() else float("nan"),
     )
+    # Axes stay float64. Casting them to float32 makes lat[1]-lat[0] and
+    # lon[1]-lon[0] a slightly short 0.01°, and the fractional index then
+    # drifts by multiple cells across the CONUS mosaic. Tile queries miss
+    # the source cell, so p3l blends the wrong neighbors and cell centers
+    # no longer keep their dBZ. dBZ itself stays float32.
     return ReflectivityFrame(
         dbz=dbz,
-        lat=lat.astype(np.float32),
-        lon=lon.astype(np.float32),
+        lat=lat,
+        lon=lon,
         valid_time=valid_time,
         product=product,
         category=category,

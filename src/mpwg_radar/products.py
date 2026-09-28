@@ -39,8 +39,9 @@ DEFAULT_PRODUCT_ID = "composite"
 # among valid neighbors, so clear air never inherits echo color.
 SAMPLE_NEAREST = "nearest"
 SAMPLE_MASKED_BILINEAR = "masked-bilinear"
-# Contour drawn inside the echo mask. Clear-air cells stay empty; the visible
-# edge is a smoothed iso-line, not the square MRMS cell.
+# One adjacent-cell seam inside the echo mask (p3i). Clear-air cells stay
+# empty. Cell centers keep source dBZ; only the shared face of two echo
+# cells blends, so the square stair is hidden without a multi-cell smear.
 SAMPLE_MASKED_SPLAT = "masked-splat"
 
 # Physical-grid categories, kept through QC and into colorize.
@@ -156,10 +157,10 @@ RALA = ProductSpec(
         "Closest public NOAA dBZ field to RadarScope Typed RALA; typing itself "
         "is PrecipFlag (not ingested this pass). Not "
         "MergedReflectivityAtLowestAltitude, which NSSL labels non-QC. "
-        "No 10/15/20 dBZ blanking. Tiles are a mask-clipped contour: clear-air "
-        "cells stay empty, and a short inset knocks the square rim off the "
-        "echo without a multi-cell halo. dBZ is resampled locally inside "
-        "that mask. Valid weak returns stay visible."
+        "No 10/15/20 dBZ blanking. Tiles use one mask-clipped seam (p3i): "
+        "the nearest cell is the footprint, cell centers keep source dBZ, "
+        "and only the shared face of two echo cells blends. Clear air is "
+        "not a sample and is not painted. Valid weak returns stay visible."
     ),
     attribution="NOAA MRMS ReflectivityAtLowestAltitude",
 )

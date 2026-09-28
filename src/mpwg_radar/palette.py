@@ -3,8 +3,10 @@
 The cooker always stores/resamples reflectivity in dBZ. This module is the
 only place that applies a palette. Composite uses the MPWG Clean palette
 (James, Sep 2026): values below 15 dBZ are transparent. RALA uses palette
-revision 2026-09-rala-p3h. Stops are a piecewise RGBA ramp on actual dBZ
-(0.1 dBZ LUT, half-up index, no rescale). p3h keeps the p3g mid and high
+revision 2026-09-rala-p3i. Stops are the p3h piecewise RGBA ramp on
+actual dBZ (0.1 dBZ LUT, half-up index, no rescale), unchanged. p3i is the
+spatial stamp: the tile resample lives in tiles.py, not in this LUT. That
+ramp keeps the p3g mid and high
 bands and retunes only the lowest valid returns: faint blue-gray, pale
 blue, cool blue, cyan, then blue-green, then weak green into the existing
 rich green, bright yellow into strong gold, gold into heavy orange, vivid
@@ -72,9 +74,8 @@ FAMILY_PROOF_PAIRS: Tuple[Tuple[float, float], ...] = (
     (41.0, 49.0),
 )
 
-# p3h retunes only the lowest valid RALA colors. Masked-splat color sigma
-# stays at the p3g value (0.44 cell) in tiles.py.
-RALA_PALETTE_VERSION = "2026-09-rala-p3h"
+# p3i keeps this p3h LUT. The spatial resample is tiles.SPATIAL_REVISION.
+RALA_PALETTE_VERSION = "2026-09-rala-p3i"
 
 # RGB control points. Alpha is not stored here; rala_opacity() supplies it.
 # p3g cooled the floor through 10 dBZ, but 12.5–17.5 was already ordinary
@@ -470,7 +471,10 @@ def rala_p3h_document() -> dict:
         "author": "James",
         "version": RALA_PALETTE_VERSION,
         "description": (
-            "Phase 3h cooker LUT (2026-09-rala-p3h). Piecewise RGBA on actual "
+            "Phase 3i spatial stamp (2026-09-rala-p3i). LUT stops are the p3h "
+            "ramp, unchanged. The tile resample is one adjacent-cell seam: "
+            "cell centers keep source dBZ, and clear air is not a sample. "
+            "Piecewise RGBA on actual "
             "dBZ, 0.1 dBZ LUT, half-up, no rescale. Anchors near 2, 10, 20, "
             "25, 32, 40, 48, 56, and 65 dBZ. Weak returns run faint blue-gray, "
             "pale blue, cool blue, cyan, then blue-green, and ordinary green "

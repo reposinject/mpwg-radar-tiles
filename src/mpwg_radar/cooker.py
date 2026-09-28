@@ -32,7 +32,7 @@ from mpwg_radar.products import DEFAULT_PRODUCT_ID, PRODUCTS, ProductSpec
 from mpwg_radar.publish import R2Publisher, UploadStats
 from mpwg_radar.qc import MODES, apply_mode
 from mpwg_radar.synthetic import synthetic_central_texas
-from mpwg_radar.tiles import write_colorbar, write_tiles
+from mpwg_radar.tiles import SPATIAL_REVISION, write_colorbar, write_tiles
 
 log = logging.getLogger(__name__)
 
@@ -551,6 +551,9 @@ def _write_mode(
                 else "none"
             ),
             "sample": product.sample_mode,
+            "spatial": (
+                SPATIAL_REVISION if product.sample_mode == "masked-splat" else "none"
+            ),
             "description": MODES[mode].description,
         },
         "palette": palette.as_dict(),

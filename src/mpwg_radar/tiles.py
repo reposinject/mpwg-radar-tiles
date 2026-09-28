@@ -186,38 +186,30 @@ def sample_masked_bilinear(
     return out_dbz, out_cat, edge_scale
 
 
-# Occupancy blur in MRMS-cell units. The visible outline is an iso-line of
-# this blur, drawn inside the echo mask. Sigma is about half a cell, so the
-# fade lives in the outer part of the boundary cell: the cell center stays
-# opaque, the square rim does not, and a storm does not grow a multi-cell
-# halo. A half-plane edge still sits near occupancy 0.5. Clear air is never
-# painted.
-_OCC_SIGMA = 0.52
-_OCC_LO = np.float32(0.56)
-_OCC_HI = np.float32(0.78)
-# Narrow disc for a one-cell return. Weight is gone well inside the cell, so
-# it cannot repaint the inset rim the occupancy contour just removed. It stays
-# on only while occupancy is still below the multi-cell iso-line, which is
-# an isolated cell, not the edge of a storm.
-_DISC_SIGMA = 0.46
-_DISC_LO = np.float32(0.82)
-_DISC_HI = np.float32(0.97)
-_DISC_KEEP_LO = np.float32(0.60)
-_DISC_KEEP_HI = np.float32(0.70)
-# dBZ is a local resample of valid cells only. Neighbors grade across the
-# shared face; a cell center stays near its own value. NO-ECHO is not a
-# sample, so 25 dBZ beside clear air does not become 18→12→6. A light peak
-# pull keeps a hot cell in its own color family when that local blend is
-# cooler. This is not a wide blur of the finished RGBA raster.
-# p3g widens only this kernel, 0.35 → 0.44 cell. Weight at one cell goes
-# from about 0.017 to about 0.076, so the flat MRMS interior grades across
-# more of the shared face. Occupancy, disc, peak-pull, and radius stay at
-# the p3d values. The retired wide kernel was 1.35.
-_COLOR_SIGMA = 0.44
-_PEAK_SIGMA = 0.32
-_PEAK_MIX = np.float32(0.45)
-_CORE_RISE = np.float32(10.0)
-_SPLAT_RADIUS = 3
+# p3i spatial stamp. One adjacent-cell resample replaces the p3h stack
+# (occupancy Gaussian σ=0.52, disc Gaussian σ=0.46, color Gaussian σ=0.44,
+# peak-pull σ=0.32). Those four kernels were the blur: a 68 dBZ cell sitting
+# in 30 dBZ rain left its own center at 62.6 dBZ, and the cooler neighbors
+# were lifted, which is the broad green→yellow→orange feather.
+# Retired wide color kernel was σ=1.35 (p3c). Do not put it back.
+SPATIAL_REVISION = "p3i"
+# |offset from the cell center|, in MRMS cells, inside which dBZ is the
+# source cell exactly. Past this, a smoothstep reaches a 50/50 blend at the
+# shared face with a valid neighbor. 0.12 cell leaves the middle of a narrow
+# core untouched and still grades most of the cell, so the stair is not a
+# flat square and the core is not a multi-cell smear.
+_DETAIL_CORE = np.float32(0.12)
+# Alpha inset toward a non-echo neighbor (no-echo, missing, or off the
+# mosaic). Starts here and reaches 0 at the cell edge. Echo neighbors do
+# not fade, so internal structure is not an alpha blur.
+_EDGE_FADE_START = np.float32(0.20)
+
+
+def _smoothstep01(t: np.ndarray) -> np.ndarray:
+    clipped = np.clip(np.asarray(t, dtype=np.float32), 0.0, 1.0)
+    return (clipped * clipped * (np.float32(3.0) - np.float32(2.0) * clipped)).astype(
+        np.float32
+    )
 
 
 def _splat_echo(
@@ -228,15 +220,16 @@ def _splat_echo(
     j_n: np.ndarray,
     i_n: np.ndarray,
     echo: np.ndarray,
-    radius: int,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """Masked-splat dBZ and edge scale for echo pixels only.
+    """One detail-preserving resample for echo pixels only.
 
-    The weights are the same grid-index Gaussians as a full-tile pass:
-    nearest cell is the footprint, taps outside the mosaic count as clear
-    air, and a clear-air pixel is never written. Clear pixels are skipped
-    instead of allocating a 512×512 temporary on every kernel tap — that
-    full-tile loop was most of a ~10 minute CONUS cook.
+    The nearest source cell is the footprint. dBZ inside ``_DETAIL_CORE`` of
+    that cell's center is the source value, so a narrow core and a local
+    maximum are not averaged down. Across the shared face with another valid
+    cell, a smoothstep seam hides the hard stair. No-echo, missing, and
+    out-of-mosaic neighbors are not samples: dBZ does not step toward them,
+    and alpha fades only inside the echo cell so the square rim comes off
+    without painting clear air. Clear pixels are not visited.
     """
     out_dbz = np.full(echo.shape, np.nan, dtype=np.float32)
     edge_scale = np.zeros(echo.shape, dtype=np.float32)
@@ -244,96 +237,87 @@ def _splat_echo(
     if ys.size == 0:
         return out_dbz, edge_scale
 
-    inv_occ = np.float32(1.0 / (2.0 * _OCC_SIGMA * _OCC_SIGMA))
-    inv_disc = np.float32(1.0 / (2.0 * _DISC_SIGMA * _DISC_SIGMA))
-    inv_color = np.float32(1.0 / (2.0 * _COLOR_SIGMA * _COLOR_SIGMA))
-    inv_peak = np.float32(1.0 / (2.0 * _PEAK_SIGMA * _PEAK_SIGMA))
-
-    jn = j_n[ys, xs].astype(np.int32, copy=False)
-    inn = i_n[ys, xs].astype(np.int32, copy=False)
-    # Neighbor gathers stay inside the tile's window. The full CONUS grid
-    # is a view here, not a copy.
-    j0 = max(0, int(jn.min()) - radius)
-    j1 = min(int(src.shape[0]), int(jn.max()) + radius + 1)
-    i0 = max(0, int(inn.min()) - radius)
-    i1 = min(int(src.shape[1]), int(inn.max()) + radius + 1)
+    jn_full = j_n[ys, xs].astype(np.int32, copy=False)
+    in_full = i_n[ys, xs].astype(np.int32, copy=False)
+    # Offset from the nearest cell center, in cell units, before the crop.
+    du = (i_f[ys, xs] - in_full.astype(np.float64)).astype(np.float32)
+    dv = (j_f[ys, xs] - jn_full.astype(np.float64)).astype(np.float32)
+    # The 3×3 around these cells. The full grid stays a view.
+    j0 = max(0, int(jn_full.min()) - 1)
+    j1 = min(int(src.shape[0]), int(jn_full.max()) + 2)
+    i0 = max(0, int(in_full.min()) - 1)
+    i1 = min(int(src.shape[1]), int(in_full.max()) + 2)
     src_c = np.asarray(src, dtype=np.float32)[j0:j1, i0:i1]
     cat_c = cat[j0:j1, i0:i1]
     ny, nx = src_c.shape
-    jn = jn - np.int32(j0)
-    inn = inn - np.int32(i0)
-    j_f_e = j_f[ys, xs] - j0
-    i_f_e = i_f[ys, xs] - i0
-    n = int(ys.size)
+    jn = jn_full - np.int32(j0)
+    inn = in_full - np.int32(i0)
 
-    mass_echo = np.zeros(n, dtype=np.float32)
-    mass_all = np.zeros(n, dtype=np.float32)
-    disc_mass = np.zeros(n, dtype=np.float32)
-    num = np.zeros(n, dtype=np.float32)
-    den = np.zeros(n, dtype=np.float32)
-    offs = np.arange(-radius, radius + 1, dtype=np.float64)
-    # dj = j_f - (j_n + dy), matching the full-tile cast to float32.
-    dj = (j_f_e[None, :] - (jn.astype(np.float64)[None, :] + offs[:, None])).astype(
-        np.float32
-    )
-    di = (i_f_e[None, :] - (inn.astype(np.float64)[None, :] + offs[:, None])).astype(
-        np.float32
-    )
-    d2_j = dj * dj
-    d2_i = di * di
-    wy_o = np.exp(-d2_j * inv_occ).astype(np.float32)
-    wy_d = np.exp(-d2_j * inv_disc).astype(np.float32)
-    wy_c = np.exp(-d2_j * inv_color).astype(np.float32)
-    wx_o = np.exp(-d2_i * inv_occ).astype(np.float32)
-    wx_d = np.exp(-d2_i * inv_disc).astype(np.float32)
-    wx_c = np.exp(-d2_i * inv_color).astype(np.float32)
-
-    dxs = np.arange(-radius, radius + 1, dtype=np.int32)
-    zero = np.float32(0.0)
-    for ky, dy in enumerate(range(-radius, radius + 1)):
-        jj = jn + np.int32(dy)
-        ii = inn[None, :] + dxs[:, None]
-        inside = (
-            ((jj >= 0) & (jj < ny))[None, :]
-            & (ii >= 0)
-            & (ii < nx)
-        )
+    def _at(jj: np.ndarray, ii: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        inside = (jj >= 0) & (jj < ny) & (ii >= 0) & (ii < nx)
         jc = np.clip(jj, 0, ny - 1)
         ic = np.clip(ii, 0, nx - 1)
-        vals = src_c[jc[None, :], ic]
-        good = inside & (cat_c[jc[None, :], ic] == CAT_VALID) & np.isfinite(vals)
-        wo = wy_o[ky] * wx_o
-        wd = wy_d[ky] * wx_d
-        wc = wy_c[ky] * wx_c
-        mass_all += np.sum(wo, axis=0, dtype=np.float32)
-        mass_echo += np.sum(np.where(good, wo, zero), axis=0, dtype=np.float32)
-        disc_mass += np.sum(np.where(good, wd, zero), axis=0, dtype=np.float32)
-        weighted = np.where(good, wc * vals.astype(np.float32), zero)
-        num += np.sum(weighted, axis=0, dtype=np.float32)
-        den += np.sum(np.where(good, wc, zero), axis=0, dtype=np.float32)
+        vals = src_c[jc, ic]
+        good = inside & (cat_c[jc, ic] == CAT_VALID) & np.isfinite(vals)
+        return vals.astype(np.float32, copy=False), good
 
-    occ = mass_echo / np.maximum(mass_all, np.float32(1e-6))
-    blob = np.clip((occ - _OCC_LO) / (_OCC_HI - _OCC_LO), 0.0, 1.0)
-    disc = np.clip((disc_mass - _DISC_LO) / (_DISC_HI - _DISC_LO), 0.0, 1.0)
-    disc_keep = np.clip(
-        (_DISC_KEEP_HI - occ) / (_DISC_KEEP_HI - _DISC_KEEP_LO), 0.0, 1.0
+    own_v, own_g = _at(jn, inn)
+    one = np.int32(1)
+    east_v, east_g = _at(jn, inn + one)
+    west_v, west_g = _at(jn, inn - one)
+    south_v, south_g = _at(jn + one, inn)
+    north_v, north_g = _at(jn - one, inn)
+
+    su = np.sign(du).astype(np.int32)
+    sv = np.sign(dv).astype(np.int32)
+    h_v = np.where(su > 0, east_v, west_v).astype(np.float32)
+    h_g = np.where(su > 0, east_g, west_g) & (su != 0)
+    v_v = np.where(sv > 0, south_v, north_v).astype(np.float32)
+    v_g = np.where(sv > 0, south_g, north_g) & (sv != 0)
+    d_v, d_g = _at(jn + sv, inn + su)
+
+    span = np.float32(0.5) - _DETAIL_CORE
+    tx = _smoothstep01((np.abs(du) - _DETAIL_CORE) / span)
+    ty = _smoothstep01((np.abs(dv) - _DETAIL_CORE) / span)
+    half = np.float32(0.5)
+    zero = np.float32(0.0)
+    wx = np.where(h_g, half * tx, zero).astype(np.float32)
+    wy = np.where(v_g, half * ty, zero).astype(np.float32)
+    w_h = wx * (np.float32(1.0) - wy)
+    w_v = wy * (np.float32(1.0) - wx)
+    # Diagonal only when both orthogonal neighbors are real echo. A clear
+    # corner does not lend its (absent) dBZ, and a diagonal-only touch does
+    # not bleed around a no-echo cell.
+    d_ok = d_g & h_g & v_g
+    w_d = np.where(d_ok, wx * wy, zero).astype(np.float32)
+    w_own = np.float32(1.0) - w_h - w_v - w_d
+    # Zero the unused taps. A NaN neighbor times a zero weight is still NaN.
+    h_safe = np.where(h_g, h_v, zero)
+    v_safe = np.where(v_g, v_v, zero)
+    d_safe = np.where(d_ok, d_v, zero)
+    own_safe = np.where(own_g, own_v, zero)
+    color = (w_own * own_safe + w_h * h_safe + w_v * v_safe + w_d * d_safe).astype(
+        np.float32
     )
-    # The disc covers an isolated cell the contour has not reached. On a
-    # storm edge the contour already owns the rim, and the disc stays off.
-    edge_scale[ys, xs] = np.maximum(blob, disc * disc_keep).astype(np.float32)
-
-    use = den > np.float32(1e-6)
-    color = np.zeros(n, dtype=np.float32)
-    color[use] = num[use] / den[use]
-    own_d2 = dj[radius] ** 2 + di[radius] ** 2
-    own = np.exp(-own_d2 * inv_peak).astype(np.float32)
-    nearest_val = src_c[jn, inn].astype(np.float32)
-    hotter = np.clip((nearest_val - color) / _CORE_RISE, 0.0, 1.0)
-    mix = (_PEAK_MIX * own * hotter).astype(np.float32)
-    pulled = (color * (np.float32(1.0) - mix) + nearest_val * mix).astype(np.float32)
-    picked = np.full(n, np.nan, dtype=np.float32)
-    picked[use] = pulled[use]
+    picked = np.full(ys.shape, np.nan, dtype=np.float32)
+    picked[own_g] = color[own_g]
     out_dbz[ys, xs] = picked
+
+    fade_span = np.float32(0.5) - _EDGE_FADE_START
+
+    def _side(delta: np.ndarray, neighbor_clear: np.ndarray) -> np.ndarray:
+        fade = np.float32(1.0) - _smoothstep01((delta - _EDGE_FADE_START) / fade_span)
+        return np.where((delta > 0) & neighbor_clear, fade, np.float32(1.0)).astype(
+            np.float32
+        )
+
+    edge = (
+        _side(du, ~east_g)
+        * _side(-du, ~west_g)
+        * _side(dv, ~south_g)
+        * _side(-dv, ~north_g)
+    )
+    edge_scale[ys, xs] = edge.astype(np.float32)
     return out_dbz, edge_scale
 
 
@@ -344,16 +328,16 @@ def sample_masked_splat(
     qlat: np.ndarray,
     qlon: np.ndarray,
     category: Optional[np.ndarray] = None,
-    radius: int = _SPLAT_RADIUS,
+    radius: int = 1,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Contour echo inside the mask. Never paint clear air.
+    """One mask-clipped seam. Never paint clear air.
 
     The nearest source cell is the footprint. A query whose nearest cell is
-    no-echo or missing stays empty, even if the smoothed outline would have
-    reached it. Inside echo, alpha follows a short occupancy contour so the
-    square rim is inset without fading the rest of the cell. A lone valid
-    cell is kept as a small disc. dBZ is a narrow blend of nearby echo
-    cells, with a light pull back toward a hotter peak cell.
+    no-echo or missing stays that category, with NaN dBZ and edge scale 0,
+    even next to a core. Inside echo, dBZ is the source cell until the outer
+    seam, where two valid cells meet. Alpha insets only the rim that faces
+    clear air, missing data, or the mosaic edge. ``radius`` is unused: p3i
+    does not run a wide kernel. It stays so older callers still import.
     """
     src = np.asarray(dbz)
     qlat_a = np.asarray(qlat)
@@ -379,15 +363,99 @@ def sample_masked_splat(
     if not np.any(echo):
         return out_dbz, out_cat, edge_scale
 
-    # Kernel taps past the grid count as clear air, so the mosaic edge does
-    # not brighten just because the window is truncated. That rule lives in
-    # _splat_echo; this call does not change the footprint or the contour.
-    splat_dbz, splat_edge = _splat_echo(
-        src, cat, j_f, i_f, j_n, i_n, echo, radius
-    )
+    # Off-grid taps count as clear air inside _splat_echo, so the mosaic
+    # edge does not brighten from a truncated window. `radius` is ignored.
+    del radius
+    splat_dbz, splat_edge = _splat_echo(src, cat, j_f, i_f, j_n, i_n, echo)
     out_dbz[echo] = splat_dbz[echo]
     edge_scale[echo] = splat_edge[echo]
     return out_dbz, out_cat, edge_scale
+
+
+def spatial_peak_loss(
+    dbz: np.ndarray,
+    lat: np.ndarray,
+    lon: np.ndarray,
+    category: Optional[np.ndarray] = None,
+) -> Dict[str, object]:
+    """Raw vs post-spatial dBZ at source cell centers.
+
+    The raw value is the decoded cell. The post value is
+    ``sample_masked_splat`` at that cell's lat/lon. Loss is raw minus post:
+    positive means the spatial stage cooled the cell. A local maximum is a
+    valid cell strictly hotter than every valid 8-neighbor (an isolated cell
+    counts). p3i is exact at those centers. The retired p3h color Gaussian
+    was not: a 68 dBZ cell in 30 dBZ rain lost 5.4 dBZ at its own center.
+    """
+    src = np.asarray(dbz, dtype=np.float32)
+    if category is None:
+        valid = np.isfinite(src)
+        cat = np.where(valid, CAT_VALID, CAT_NO_ECHO).astype(np.uint8)
+    else:
+        cat = np.asarray(category)
+        valid = cat == CAT_VALID
+    empty = {
+        "spatial_revision": SPATIAL_REVISION,
+        "cells": 0.0,
+        "field_max_raw": float("nan"),
+        "field_max_post": float("nan"),
+        "field_max_loss": float("nan"),
+        "center_loss_max": float("nan"),
+        "center_abs_max": float("nan"),
+        "local_max_count": 0.0,
+        "local_max_raw": float("nan"),
+        "local_max_post": float("nan"),
+        "local_max_loss": float("nan"),
+        "worst_local_max_loss": float("nan"),
+    }
+    if not np.any(valid):
+        return empty
+    qlon, qlat = np.meshgrid(np.asarray(lon, dtype=np.float64), np.asarray(lat, dtype=np.float64))
+    post, _post_cat, _edge = sample_masked_splat(src, lat, lon, qlat, qlon, cat)
+    raw = src[valid]
+    got = post[valid]
+    delta = raw - got
+    field_max = float(np.max(raw))
+    at_max = valid & np.isfinite(src) & (src >= field_max - np.float32(1e-4))
+    loss_at_field_max = float(np.max(src[at_max] - post[at_max]))
+
+    # Strict local maxima. Invalid neighbors are -inf so they do not block a peak.
+    filled = np.where(valid & np.isfinite(src), src, np.float32(-1e30))
+    padded = np.pad(filled, 1, mode="constant", constant_values=np.float32(-1e30))
+    hotter = np.ones(src.shape, dtype=bool)
+    height, width = src.shape
+    for dj in (-1, 0, 1):
+        for di in (-1, 0, 1):
+            if dj == 0 and di == 0:
+                continue
+            window = padded[1 + dj : 1 + dj + height, 1 + di : 1 + di + width]
+            hotter &= filled > window
+    peaks = valid & hotter
+    report = {
+        "spatial_revision": SPATIAL_REVISION,
+        "cells": float(int(valid.sum())),
+        "field_max_raw": field_max,
+        "field_max_post": float(np.max(got)),
+        "field_max_loss": loss_at_field_max,
+        "center_loss_max": float(np.max(delta)),
+        "center_abs_max": float(np.max(np.abs(delta))),
+        "local_max_count": float(int(peaks.sum())),
+    }
+    if np.any(peaks):
+        peak_raw = src[peaks]
+        peak_post = post[peaks]
+        peak_loss = peak_raw - peak_post
+        hottest = int(np.argmax(peak_raw))
+        report["local_max_raw"] = float(peak_raw[hottest])
+        report["local_max_post"] = float(peak_post[hottest])
+        report["local_max_loss"] = float(peak_loss[hottest])
+        report["worst_local_max_loss"] = float(np.max(peak_loss))
+    else:
+        report["local_max_raw"] = float("nan")
+        report["local_max_post"] = float("nan")
+        report["local_max_loss"] = float("nan")
+        report["worst_local_max_loss"] = float("nan")
+    return report
 
 
 def _query_lonlat(z: int, x: int, y: int, tile_size: int):
@@ -415,11 +483,10 @@ def render_tile(
     """Return (PNG image, has_echo).
 
     ``nearest`` (composite) copies one MRMS cell into every pixel of that
-    cell. ``masked-splat`` (RALA) and ``masked-bilinear`` keep that nearest
-    cell as the footprint and only blend inside echo, so a clear-air neighbor
-    stays empty. Splat insets the square rim with a short contour and blends
-    dBZ only across the shared face of neighboring echo cells; a lone echo
-    cell stays a small disc.
+    cell. ``masked-bilinear`` is the older in-mask blend and is not the RALA
+    path. ``masked-splat`` (RALA, p3i) keeps the nearest cell as the footprint
+    and runs one seam: cell centers stay on the source dBZ, the shared face
+    of two echo cells blends, and clear air is never a sample or a paint target.
     """
     qlon, qlat = _query_lonlat(z, x, y, tile_size)
     if sample_mode in (SAMPLE_MASKED_BILINEAR, SAMPLE_MASKED_SPLAT):

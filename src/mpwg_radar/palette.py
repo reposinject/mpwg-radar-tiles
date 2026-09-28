@@ -3,7 +3,7 @@
 The cooker always stores/resamples reflectivity in dBZ. This module is the
 only place that applies a palette. Composite uses the MPWG Clean palette
 (James, Sep 2026): values below 15 dBZ are transparent. RALA uses palette
-revision 2026-09-rala-p3k. Spatial stays p3i: the tile resample lives in
+revision 2026-09-rala-p3k. Spatial is p3l: the tile resample lives in
 tiles.py, not in this LUT. The ramp is piecewise RGBA on actual dBZ
 (0.1 dBZ LUT, half-up index, no rescale). Stops through 20 dBZ are the
 p3j weak band: faint blue-gray, pale blue, cool blue, cyan, blue-green,
@@ -74,7 +74,7 @@ FAMILY_PROOF_PAIRS: Tuple[Tuple[float, float], ...] = (
     (41.0, 49.0),
 )
 
-# Palette stamp. The spatial resample is tiles.SPATIAL_REVISION ("p3i").
+# Palette stamp. The spatial resample is tiles.SPATIAL_REVISION ("p3l").
 RALA_PALETTE_VERSION = "2026-09-rala-p3k"
 
 # RGB control points. Alpha is not stored here; rala_opacity() supplies it.
@@ -490,10 +490,10 @@ def rala_palette_document() -> dict:
         "author": "James",
         "version": RALA_PALETTE_VERSION,
         "description": (
-            "Phase 3k LUT on the locked p3i spatial seam (2026-09-rala-p3k). "
+            "Phase 3k LUT on the p3l spatial seam (2026-09-rala-p3k). "
             "Denser mid/high hinges for a RadarScope match: continuous 25–60 "
             "dBZ stops so neighboring dBZ stay visually distinguishable. "
-            "Spatial revision stays p3i: one adjacent-cell seam, cell centers "
+            "Spatial revision is p3l: one adjacent-cell seam (wider exact core than p3i), cell centers "
             "keep source dBZ, and clear air is not a sample. No blur restore "
             "and no fake sharpen. Piecewise RGBA on actual dBZ, 0.1 dBZ LUT, "
             "half-up, no rescale. Anchors are hinges, not solid-color buckets, "

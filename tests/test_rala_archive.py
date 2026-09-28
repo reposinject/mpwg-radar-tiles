@@ -9,6 +9,8 @@ from pathlib import Path
 from mpwg_radar.config import CookerConfig
 from mpwg_radar.cooker import (
     FrameRetention,
+    _already_published,
+    _frame_is_complete,
     _prune_old_frames,
     _stale_frame_ids,
     _write_manifest,
@@ -19,9 +21,10 @@ from mpwg_radar.cooker import (
 from mpwg_radar.geo import CENTRAL_TEXAS
 from mpwg_radar.grib import frame_id_for
 from mpwg_radar.ingest import list_recent_s3_scans
-from mpwg_radar.palette import load_palette
+from mpwg_radar.palette import RALA_PALETTE_VERSION, load_palette
 from mpwg_radar.products import get_product
 from mpwg_radar.synthetic import synthetic_central_texas
+from mpwg_radar.tiles import SPATIAL_REVISION
 
 
 def _aware(moment: datetime) -> datetime:
@@ -408,14 +411,16 @@ def test_complete_frames_are_skipped_newest_hole_first(tmp_path: Path, monkeypat
         return synthetic_central_texas(valid_time=when)
 
     monkeypatch.setattr("mpwg_radar.cooker.decode_grib2", fake_decode)
-    # The scan 4 minutes back is already on disk with the live palette.
-    # It must not be decoded again. The newer hole is cooked first.
+    # The scan 4 minutes back is already on disk with the live palette and
+    # the current spatial stamp. It must not be decoded again. The newer
+    # hole is cooked first.
     held = times[2]
     mode_dir = tmp_path / "radar" / "rala" / "clean"
     held_id = _seed_frame(mode_dir, held)
     meta_path = mode_dir / held_id / "frame.json"
     meta = json.loads(meta_path.read_text())
-    meta["palette"] = {"version": "2026-09-rala-p3k"}
+    meta["palette"] = {"version": RALA_PALETTE_VERSION}
+    meta["mode_spec"] = {"spatial": SPATIAL_REVISION, "sample": "masked-splat"}
     meta_path.write_text(json.dumps(meta))
     cfg = CookerConfig(
         bbox=CENTRAL_TEXAS,
@@ -561,3 +566,157 @@ def test_list_recent_s3_scans_keeps_every_two_minute_key(monkeypatch):
     assert gaps == [120.0] * (len(got) - 1)
     assert scans[0].valid_time == now
     assert scans[-1].valid_time == now - timedelta(minutes=14)
+
+
+def _plant_frame(
+    radar: Path,
+    product_id: str,
+    frame_id: str,
+    meta: dict,
+    mode: str = "clean",
+) -> None:
+    path = get_product(product_id).mode_dir(radar, mode) / frame_id / "frame.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(meta))
+
+
+def test_spatial_mismatch_is_incomplete_when_palette_matches(tmp_path: Path):
+    """A spatial-only ship must repaint archive frames the palette still accepts."""
+    frame_id = "20260928T180000Z"
+    radar = tmp_path / "radar"
+    rala = get_product("rala")
+    cfg = CookerConfig(
+        product_id="rala",
+        modes=["clean"],
+        output_dir=tmp_path,
+        upload=False,
+    )
+
+    def plant(spatial, palette_version=RALA_PALETTE_VERSION, mode="clean"):
+        mode_spec = {"sample": "masked-splat"}
+        if spatial is not None:
+            mode_spec["spatial"] = spatial
+        meta = {"id": frame_id, "mode_spec": mode_spec}
+        if palette_version is not None:
+            meta["palette"] = {"version": palette_version}
+        _plant_frame(radar, "rala", frame_id, meta, mode=mode)
+
+    plant(SPATIAL_REVISION)
+    assert _frame_is_complete(
+        cfg, radar, rala, frame_id, False, palette_version=RALA_PALETTE_VERSION
+    )
+
+    plant("p3i")
+    assert not _frame_is_complete(
+        cfg, radar, rala, frame_id, False, palette_version=RALA_PALETTE_VERSION
+    )
+
+    plant(None)
+    assert not _frame_is_complete(
+        cfg, radar, rala, frame_id, False, palette_version=RALA_PALETTE_VERSION
+    )
+
+    plant(SPATIAL_REVISION, palette_version="2026-09-rala-p2d")
+    assert not _frame_is_complete(
+        cfg, radar, rala, frame_id, False, palette_version=RALA_PALETTE_VERSION
+    )
+
+    plant(SPATIAL_REVISION, palette_version=None)
+    assert not _frame_is_complete(
+        cfg, radar, rala, frame_id, False, palette_version=RALA_PALETTE_VERSION
+    )
+
+    # Every mode has to carry the stamp. One stale mode keeps the scan open.
+    cfg.modes = ["clean", "standard"]
+    plant(SPATIAL_REVISION, mode="clean")
+    plant("p3i", mode="standard")
+    assert not _frame_is_complete(
+        cfg, radar, rala, frame_id, False, palette_version=RALA_PALETTE_VERSION
+    )
+
+    # Composite stays palette-only. A spatial field, present or not, is ignored.
+    composite = get_product("composite")
+    comp = CookerConfig(product_id="composite", modes=["clean"], output_dir=tmp_path)
+    comp_version = load_palette(comp.palette_id).version
+    _plant_frame(
+        radar,
+        "composite",
+        frame_id,
+        {"palette": {"version": comp_version}, "mode_spec": {"spatial": "p3i"}},
+    )
+    assert _frame_is_complete(
+        comp, radar, composite, frame_id, False, palette_version=comp_version
+    )
+    _plant_frame(
+        radar,
+        "composite",
+        frame_id,
+        {"palette": {"version": comp_version}},
+    )
+    assert _frame_is_complete(
+        comp, radar, composite, frame_id, False, palette_version=comp_version
+    )
+
+
+def test_spatial_mismatch_recooks_latest_when_palette_matches(tmp_path: Path):
+    """The latest skip path must follow a spatial bump, not only the archive."""
+    frame_id = "20260928T180000Z"
+    radar = tmp_path / "radar"
+    radar.mkdir()
+    (radar / "manifest.json").write_text(
+        json.dumps({"products": {"rala": {"latest_frame": frame_id}}})
+    )
+    rala = get_product("rala")
+    cfg = CookerConfig(
+        product_id="rala",
+        modes=["clean"],
+        output_dir=tmp_path,
+        upload=False,
+    )
+
+    def plant(spatial, palette_version=RALA_PALETTE_VERSION):
+        mode_spec = {"sample": "masked-splat"}
+        if spatial is not None:
+            mode_spec["spatial"] = spatial
+        meta = {"id": frame_id, "mode_spec": mode_spec}
+        if palette_version is not None:
+            meta["palette"] = {"version": palette_version}
+        _plant_frame(radar, "rala", frame_id, meta)
+
+    plant(SPATIAL_REVISION)
+    assert _already_published(cfg, radar, rala, frame_id, False) is True
+
+    plant("p3i")
+    assert _already_published(cfg, radar, rala, frame_id, False) is False
+
+    plant(None)
+    assert _already_published(cfg, radar, rala, frame_id, False) is False
+
+    plant(SPATIAL_REVISION, palette_version="2026-09-rala-p2d")
+    assert _already_published(cfg, radar, rala, frame_id, False) is False
+
+    # A missing palette version still does not force a retile. Only a present,
+    # different stamp does. Spatial is the extra gate.
+    plant(SPATIAL_REVISION, palette_version=None)
+    assert _already_published(cfg, radar, rala, frame_id, False) is True
+
+    composite = get_product("composite")
+    (radar / "manifest.json").write_text(
+        json.dumps({"products": {"composite": {"latest_frame": frame_id}}})
+    )
+    comp = CookerConfig(product_id="composite", modes=["clean"], output_dir=tmp_path)
+    comp_version = load_palette(comp.palette_id).version
+    _plant_frame(
+        radar,
+        "composite",
+        frame_id,
+        {"palette": {"version": comp_version}, "mode_spec": {"spatial": "none"}},
+    )
+    assert _already_published(comp, radar, composite, frame_id, False) is True
+    _plant_frame(
+        radar,
+        "composite",
+        frame_id,
+        {"palette": {"version": comp_version}},
+    )
+    assert _already_published(comp, radar, composite, frame_id, False) is True

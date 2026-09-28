@@ -393,6 +393,19 @@ def manifest_lock(radar_root: Path) -> Iterator[None]:
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
+def _spatial_stamp_current(meta: dict, product: ProductSpec) -> bool:
+    """Masked-splat frames must carry the current spatial revision.
+
+    A missing ``mode_spec.spatial`` is an older cook and is not current, so a
+    spatial-only ship repaints it the same way a palette bump does. Products
+    that do not use the spatial seam are not gated on this stamp.
+    """
+    if product.sample_mode != "masked-splat":
+        return True
+    spatial = (meta.get("mode_spec") or {}).get("spatial")
+    return spatial == SPATIAL_REVISION
+
+
 def _already_published(
     cfg: CookerConfig,
     radar_root: Path,
@@ -427,14 +440,19 @@ def _already_published(
     if published != frame_id:
         return False
     # A palette bump has to retile. Matching the frame id is not enough when
-    # the stamp on disk is an older ramp.
+    # the stamp on disk is an older ramp. A spatial bump is the same for
+    # masked-splat: frames still stamped p3i (or missing the stamp) must
+    # recook once SPATIAL_REVISION moves, even when the palette still matches.
     meta_path = product.mode_dir(radar_root, cfg.modes[0]) / frame_id / "frame.json"
     if meta_path.is_file():
         try:
-            stamped = (json.loads(meta_path.read_text()).get("palette") or {}).get("version")
+            meta = json.loads(meta_path.read_text())
         except json.JSONDecodeError:
             return False
+        stamped = (meta.get("palette") or {}).get("version")
         if stamped and stamped != load_palette(cfg.palette_id).version:
+            return False
+        if not _spatial_stamp_current(meta, product):
             return False
     if should_upload and cfg.r2.enabled:
         # Written only after the manifest PUT returns. A local manifest that
@@ -855,18 +873,25 @@ def _frame_is_complete(
     The marker lives beside the frame directory so it is not part of the tile
     tree that gets PUT to R2. A palette version mismatch is incomplete so a
     ramp change repaints real scans instead of leaving the old colors up.
+    Masked-splat products also require ``mode_spec.spatial`` to equal
+    ``SPATIAL_REVISION``. A missing stamp is an older cook and is incomplete,
+    so a spatial-only ship repaints frames still stamped ``p3i``.
     """
+    check_spatial = product.sample_mode == "masked-splat"
     for mode in cfg.modes:
         meta_path = product.mode_dir(radar_root, mode) / frame_id / "frame.json"
         if not meta_path.is_file():
             return False
-        if palette_version is not None:
+        if palette_version is not None or check_spatial:
             try:
                 meta = json.loads(meta_path.read_text())
             except json.JSONDecodeError:
                 return False
-            stamped = (meta.get("palette") or {}).get("version")
-            if stamped != palette_version:
+            if palette_version is not None:
+                stamped = (meta.get("palette") or {}).get("version")
+                if stamped != palette_version:
+                    return False
+            if not _spatial_stamp_current(meta, product):
                 return False
         mode_dir = product.mode_dir(radar_root, mode)
         if need_upload and not (mode_dir / f".uploaded-{frame_id}").is_file():

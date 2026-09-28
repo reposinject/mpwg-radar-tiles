@@ -110,17 +110,17 @@ def test_colorbar_starts_at_display_cutoff():
     assert arr[0, -1, 3] == 255
 
 
-# p3h calibration anchors. 2 is light blue and 10 is cyan. 20 and the
-# mid/high bands are the p3g colors, unchanged. Alpha is still the ramp.
+# p3j calibration anchors. 2, 10, and 20 are the p3h colors. 25–56 are the
+# calmed mid/high. 65 is still hot magenta. Alpha is still the ramp.
 RALA_ANCHOR_RGB = {
     2.0: (84, 138, 206),
     10.0: (18, 172, 198),
     20.0: (8, 142, 18),
-    25.0: (0, 176, 0),
-    32.0: (255, 246, 0),
-    40.0: (255, 108, 0),
-    48.0: (255, 40, 0),
-    56.0: (176, 0, 0),
+    25.0: (16, 164, 14),
+    32.0: (216, 196, 10),
+    40.0: (224, 138, 8),
+    48.0: (204, 84, 10),
+    56.0: (148, 8, 16),
     65.0: (255, 0, 255),
 }
 
@@ -140,12 +140,12 @@ def _chroma(rgb) -> int:
 
 
 def test_rala_piecewise_anchors_match_stops():
-    from mpwg_radar.palette import RALA_PALETTE_VERSION, derive_rala_p3h_stops
+    from mpwg_radar.palette import RALA_PALETTE_VERSION, derive_rala_stops
 
     pal = load_palette("mpwg-rala-2026-09")
-    assert pal.version == RALA_PALETTE_VERSION == "2026-09-rala-p3i"
+    assert pal.version == RALA_PALETTE_VERSION == "2026-09-rala-p3j"
     assert pal.min_dbz == -32.0
-    derived = derive_rala_p3h_stops()
+    derived = derive_rala_stops()
     assert [stop.dbz for stop in pal.stops] == [stop.dbz for stop in derived]
     assert [stop.rgba for stop in pal.stops] == [stop.rgba for stop in derived]
     for stop in pal.stops:
@@ -219,29 +219,32 @@ def test_rala_anchor_feel_and_no_cyan():
     assert a20 == 255 and g20 > r20 and g20 > b20 and g20 < 170 and b20 < 40
     r25, g25, b25, a25 = _rgba(pal, 25.0)
     assert a25 == 255 and 150 <= g25 <= 200 and r25 < 20 and b25 < 20 and g25 > r25 + 100
-    assert g25 > g10
+    # 25 is green because blue has collapsed, not because G outshines the cyan tap.
+    # G stays under the p3h neon (0, 176, 0).
+    assert b25 < b10 - 100 and g25 < 176
     r22, g22, b22, a22 = _rgba(pal, 22.8)
     assert a22 == 255 and g22 > r22 and g22 > b22 and b22 < 90
     for dbz in (25.7, 27.2, 30.0):
         r, g, b, a = _rgba(pal, dbz)
         assert a == 255 and g > r and g > b and b < 40, (dbz, r, g, b)
-    # 30–40 bright yellow → strong gold. Fully opaque.
+    # 30–40 strong yellow, not the p3h laser (255, 246, 0). Fully opaque.
     r32, g32, b32, a32 = _rgba(pal, 32.0)
-    assert a32 == 255 and r32 > 240 and g32 > 230 and b32 < 10
+    assert a32 == 255 and r32 > 190 and g32 > 170 and b32 < 30 and abs(r32 - g32) < 40
+    assert not (r32 > 250 and g32 > 240)
     r40, g40, b40, a40 = _rgba(pal, 40.0)
-    assert a40 == 255 and r40 > 240 and 80 < g40 < 140 and b40 < 10
-    # 40–50 gold → heavy orange.
+    assert a40 == 255 and r40 > 200 and 100 < g40 < 160 and b40 < 20 and r40 < 250
+    # 40–48 stays orange. Red waits for 50, so a 45 dBZ core is not already pure red.
     r44, g44, b44, _ = _rgba(pal, 44.0)
-    assert r44 > 240 and g44 > g40 * 0.4 and g44 < g40 and b44 < 20
+    assert r44 > 190 and g44 > g40 * 0.4 and g44 < g40 and b44 < 30
     r48, g48, b48, a48 = _rgba(pal, 48.0)
-    assert a48 == 255 and r48 > 240 and 20 < g48 < 70 and b48 < 10 and g48 < g40
-    # 50–60 vivid red → dark red core. 56 stays pure red, darker than 50.
+    assert a48 == 255 and r48 > 180 and 60 < g48 < 110 and b48 < 30 and g48 < g40
+    # 50–60 red into a darker core. Not pure 255 red, and 56 is not magenta.
     r50, g50, b50, a50 = _rgba(pal, 50.0)
-    assert a50 == 255 and r50 > 240 and g50 < 20 and b50 < 20
+    assert a50 == 255 and 170 < r50 < 230 and g50 < 40 and b50 < 30 and r50 > g50 + 100
     r56, g56, b56, a56 = _rgba(pal, 56.0)
-    assert a56 == 255 and 150 < r56 < r50 and g56 < 10 and b56 < 20 and r56 > b56 + 100
+    assert a56 == 255 and 120 < r56 < r50 and g56 < 20 and b56 < 40 and r56 > b56 + 80
     r60, g60, b60, a60 = _rgba(pal, 60.0)
-    assert a60 == 255 and r60 > 150 and g60 < 15 and b60 < 80 and r60 > b60 + 80
+    assert a60 == 255 and r60 > 110 and g60 < 20 and 40 < b60 < 90 and r60 > b60 + 50
     # 60–65+ pink → magenta → extreme. 65 is hot; 70 has not washed out.
     r62, g62, b62, _ = _rgba(pal, 62.5)
     assert r62 > 180 and b62 > 100 and g62 < 40 and b62 > g62
@@ -379,13 +382,67 @@ def _first_ordinary_green(pal) -> float:
     raise AssertionError("ordinary green never arrived")
 
 
-def test_rala_p3h_weak_band_leaves_p3g_cores_and_stays_continuous():
-    """Lowest valid dBZ stays cooler than p3g. From 20 up the p3g RGB stays."""
+# colorize() RGBA of 2026-09-rala-p3h (the p3i stamp). p3j must match these
+# through 20 dBZ and at the magenta extreme, and must be less vivid between.
+_P3H_THROUGH_20 = {
+    -32.0: (48, 62, 80, 56),
+    0.0: (118, 156, 196, 119),
+    2.0: (84, 138, 206, 127),
+    2.5: (77, 134, 207, 129),
+    5.0: (42, 112, 214, 140),
+    7.5: (28, 156, 208, 152),
+    10.0: (18, 172, 198, 165),
+    12.5: (16, 174, 170, 179),
+    15.0: (14, 166, 128, 210),
+    17.5: (11, 154, 73, 241),
+    20.0: (8, 142, 18, 255),
+}
+_P3H_MID_HIGH = {
+    22.5: (4, 159, 9, 255),
+    25.0: (0, 176, 0, 255),
+    27.5: (10, 187, 0, 255),
+    30.0: (20, 198, 0, 255),
+    32.0: (255, 246, 0, 255),
+    32.5: (255, 237, 0, 255),
+    35.0: (255, 194, 0, 255),
+    37.5: (255, 151, 0, 255),
+    40.0: (255, 108, 0, 255),
+    42.5: (255, 87, 0, 255),
+    45.0: (255, 66, 0, 255),
+    47.5: (255, 44, 0, 255),
+    48.0: (255, 40, 0, 255),
+    50.0: (255, 0, 0, 255),
+    52.5: (222, 0, 0, 255),
+    55.0: (189, 0, 0, 255),
+    56.0: (176, 0, 0, 255),
+    57.5: (172, 0, 18, 255),
+    60.0: (164, 0, 48, 255),
+    62.5: (210, 0, 152, 255),
+}
+_P3H_MAGENTA = {
+    65.0: (255, 0, 255, 255),
+    67.5: (255, 6, 255, 255),
+    70.0: (255, 12, 255, 255),
+    72.5: (255, 134, 255, 255),
+    75.0: (255, 255, 255, 255),
+}
+
+
+def test_rala_p3j_keeps_weak_band_and_calms_mid_high():
+    """Stops through 20 dBZ stay p3h. 25–62.5 leave the neon corners. Magenta stays."""
     pal = load_palette("mpwg-rala-2026-09")
-    for dbz in (20.0, 25.0, 30.0, 32.0, 40.0, 48.0, 50.0, 56.0, 60.0, 65.0, 70.0):
-        assert _rgba(pal, dbz)[:3] == _P3F_RGB[dbz], dbz
-    for dbz, rgba in _P3G_FROM_20.items():
+    for dbz, rgba in _P3H_THROUGH_20.items():
         assert _rgba(pal, dbz) == rgba, dbz
+    for dbz, rgba in _P3H_MAGENTA.items():
+        assert _rgba(pal, dbz) == rgba, dbz
+    for dbz, rgba in _P3H_MID_HIGH.items():
+        got = _rgba(pal, dbz)
+        assert got != rgba, dbz
+        assert got[3] == 255
+        assert _chroma(got) < _chroma(rgba), (dbz, got, rgba)
+        # Neighboring dBZ still move. A pulled stop is not a flat bucket.
+        nxt = _rgba(pal, dbz + 0.5)
+        assert nxt != got, dbz
     # 2 and 10 are no longer the p3f green taps, and they are bluer than p3g.
     assert _rgba(pal, 2.0)[2] >= _P3F_RGB[2.0][2] + 80
     assert _rgba(pal, 2.0)[2] > _rgba(pal, 2.0)[1]
@@ -402,20 +459,22 @@ def test_rala_p3h_weak_band_leaves_p3g_cores_and_stays_continuous():
     assert _rgba(pal, 15.0)[2] > 110
     assert _hue(_rgba(pal, 17.5)) > 140
     assert _first_ordinary_green(pal) > 17.5
-    assert _chroma(_rgba(pal, 25.0)) >= _chroma(_P3D_RGB[25.0]) + 30
-    assert _rgba(pal, 40.0)[1] <= _P3D_RGB[40.0][1] - 30
-    assert _chroma(_rgba(pal, 48.0)) > _chroma(_P3D_RGB[48.0])
+    # Mid/high is calmer than p3h and still in family. 40 is orange, not p3d's pale gold.
+    # 56 stays red: p3d was already pink there, and p3j does not pull magenta down.
+    assert _rgba(pal, 40.0)[1] < _P3D_RGB[40.0][1] - 40
+    assert _rgba(pal, 40.0)[1] < _P3E_RGB[40.0][1]
+    assert _rgba(pal, 48.0)[1] < _P3E_RGB[48.0][1]
+    assert _rgba(pal, 48.0)[1] > 60
     assert _rgba(pal, 56.0)[2] < 50 and _P3D_RGB[56.0][2] > 100
     assert _chroma(_rgba(pal, 65.0)) >= _chroma(_P3D_RGB[65.0]) + 40
     assert _chroma(_rgba(pal, 70.0)) >= _chroma(_P3D_RGB[70.0]) + 70
-    for dbz in (25.0, 32.0, 40.0, 48.0, 50.0, 65.0, 70.0):
+    for dbz in (65.0, 70.0):
         assert _chroma(_rgba(pal, dbz)) > _chroma(_P3E_RGB[dbz]), dbz
-    # Gold and orange leave the pale yellow. 50 is pure red; 56 is a darker pure core.
-    assert _rgba(pal, 40.0)[1] <= _P3E_RGB[40.0][1] - 40
-    assert _rgba(pal, 48.0)[1] <= _P3E_RGB[48.0][1] - 40
-    assert _rgba(pal, 50.0)[:3] == (255, 0, 0)
-    assert _rgba(pal, 56.0)[1] == 0 and _rgba(pal, 56.0)[2] == 0
-    assert _rgba(pal, 56.0)[0] < _rgba(pal, 50.0)[0] - 40
+    # 50 is red and darker than the p3h pure red. 56 is a darker red core, not magenta.
+    assert _rgba(pal, 50.0)[0] > 170 and _rgba(pal, 50.0)[0] < 255
+    assert _rgba(pal, 50.0)[1] < 40 and _rgba(pal, 50.0)[2] < 40
+    assert _rgba(pal, 56.0)[0] < _rgba(pal, 50.0)[0] - 30
+    assert _rgba(pal, 56.0)[2] < 40
     assert _rgb_dist(_rgba(pal, 50.0), _rgba(pal, 56.0)) > _rgb_dist(_P3E_RGB[50.0], _P3E_RGB[56.0])
     assert _rgb_dist(_rgba(pal, 56.0), _rgba(pal, 60.0)) >= _rgb_dist(
         _P3E_RGB[56.0], _P3E_RGB[60.0]
@@ -426,10 +485,13 @@ def test_rala_p3h_weak_band_leaves_p3g_cores_and_stays_continuous():
     assert _rgba(pal, 10.0)[3] < _rgba(pal, 15.0)[3] < _rgba(pal, 20.0)[3] == 255
     for dbz in (25.0, 32.0, 40.0, 48.0, 56.0, 65.0):
         assert _rgba(pal, dbz)[3] == 255
-    # 20 is the subdued deep-green handoff, not a second neon. 25 is richer.
+    # 20 is the subdued deep-green handoff, not a second neon. 25 is a richer
+    # green than 20 and less neon than the p3h (0, 176, 0) tap.
     assert _rgba(pal, 20.0)[1] < 160
     assert _chroma(_rgba(pal, 20.0)) <= _chroma(_P3E_RGB[20.0]) + 15
-    assert _chroma(_rgba(pal, 25.0)) >= _chroma(_rgba(pal, 20.0)) + 30
+    assert _rgba(pal, 25.0)[1] > _rgba(pal, 20.0)[1]
+    assert _chroma(_rgba(pal, 25.0)) > _chroma(_rgba(pal, 20.0))
+    assert _chroma(_rgba(pal, 25.0)) < _chroma((0, 176, 0, 255))
 
     prev = None
     for step_i in range(-320, 751):

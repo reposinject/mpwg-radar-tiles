@@ -9,9 +9,14 @@ import numpy as np
 from mpwg_radar.geo import latlon_to_global_xy, tile_bounds
 from mpwg_radar.grib import ReflectivityFrame
 from mpwg_radar.palette import load_palette
-from mpwg_radar.products import CAT_NO_ECHO, CAT_VALID, RALA
+from mpwg_radar.products import CAT_MISSING, CAT_NO_ECHO, CAT_VALID, RALA
 from mpwg_radar.qc import apply_mode, edge_aware_smooth, mild_smooth
-from mpwg_radar.tiles import render_tile, sample_masked_bilinear, sample_masked_splat
+from mpwg_radar.tiles import (
+    render_tile,
+    sample_masked_bilinear,
+    sample_masked_splat,
+    spatial_peak_loss,
+)
 
 
 def _frame(dbz, lat, lon, category):
@@ -139,7 +144,7 @@ def test_splat_rounds_squares_without_painting_clear_air():
         dbz, lat, lon, qlat, np.array([[-98.00]]), cat
     )
     assert center_cat[0, 0] == CAT_VALID
-    assert abs(float(center[0, 0]) - 62.0) < 1.0
+    assert abs(float(center[0, 0]) - 62.0) < 1e-3
     assert float(center_s[0, 0]) > 0.9
 
     # Voronoi corner of the echo cell: still the echo cell, but not a square.
@@ -199,7 +204,9 @@ def test_splat_contour_hides_the_square_edge_and_keeps_a_hot_core():
         dbz, lat, lon, np.array([[float(lat[8])]]), np.array([[float(lon[8])]]), cat
     )
     assert core_cat[0, 0] == CAT_VALID
-    assert float(core[0, 0]) >= 60.0
+    # p3i keeps the cell center. p3h's color Gaussian left a core like this
+    # several dBZ cooler than the source cell.
+    assert abs(float(core[0, 0]) - 68.0) < 1e-3
 
 
 def test_edge_aware_smooth_keeps_cores_and_clear_air():
@@ -298,25 +305,26 @@ def test_splat_echo_only_matches_the_contour_on_a_fixed_block():
     qlon = np.linspace(-98.02, -97.98, 5)
     qlon_g, qlat_g = np.meshgrid(qlon, qlat)
     got_dbz, got_cat, got_edge = sample_masked_splat(dbz, lat, lon, qlat_g, qlon_g, cat)
-    # Cell centers stay in their own family. p3g color sigma is 0.44 cell
-    # (p3d was 0.35). The retired wide kernel turned 12 into ~25 and 62 into
-    # ~56, and it faded the whole outer ring. Occupancy (edge) is unchanged.
+    # Queries sit on cell centers. p3i copies the source dBZ there.
+    # p3h's color Gaussian (σ=0.44) plus peak-pull turned this 62 into
+    # 57.28 (loss 4.72) and lifted the 9 to 12.11. Edge scale at a center
+    # stays solid; the square rim fades off-center, not here.
     expect_dbz = np.array(
         [
-            [12.800564, 20.326721, 25.475813, 38.30217, np.nan],
-            [17.059305, 51.117523, 57.28192, 30.376078, np.nan],
-            [12.113941, 44.1955, 33.943657, 21.913576, np.nan],
-            [11.379105, 17.878231, 19.51019, 14.878299, np.nan],
+            [12.0, 18.0, 22.0, 40.0, np.nan],
+            [15.0, 55.0, 62.0, 28.0, np.nan],
+            [9.0, 48.0, 33.0, 21.0, np.nan],
+            [11.0, 16.0, 19.0, 14.0, np.nan],
             [np.nan, np.nan, np.nan, np.nan, np.nan],
         ],
         dtype=np.float32,
     )
     expect_edge = np.array(
         [
-            [0.974104, 1.0, 1.0, 0.974104, 0.0],
             [1.0, 1.0, 1.0, 1.0, 0.0],
             [1.0, 1.0, 1.0, 1.0, 0.0],
-            [0.974104, 1.0, 1.0, 0.974104, 0.0],
+            [1.0, 1.0, 1.0, 1.0, 0.0],
+            [1.0, 1.0, 1.0, 1.0, 0.0],
             [0.0, 0.0, 0.0, 0.0, 0.0],
         ],
         dtype=np.float32,
@@ -347,10 +355,11 @@ def test_splat_echo_only_matches_the_contour_on_a_fixed_block():
         dtype=np.float32,
     )
     err = np.abs(got_dbz[:4, :4] - src)
-    assert float(err.max()) < 5.5
-    assert float(got_dbz[1, 2]) > 57.0  # 62 dBZ core stays in the high 50s
-    assert float(got_dbz[0, 0]) < 16.0  # 12 dBZ edge is not lifted into the 20s
-    assert float(got_edge[:4, :4].min()) > 0.9
+    assert float(err.max()) < 1e-3
+    assert abs(float(got_dbz[1, 2]) - 62.0) < 1e-3
+    assert abs(float(got_dbz[0, 0]) - 12.0) < 1e-3
+    assert abs(float(got_dbz[2, 0]) - 9.0) < 1e-3
+    assert float(got_edge[:4, :4].min()) > 0.99
 
 
 def test_splat_does_not_invent_a_low_dbz_halo_beside_clear_air():
@@ -378,7 +387,7 @@ def test_splat_does_not_invent_a_low_dbz_halo_beside_clear_air():
         dbz, lat, lon, np.array([[edge_lat]]), np.array([[mid_lon]]), cat
     )
     assert center_cat[0, 0] == CAT_VALID
-    assert abs(float(center[0, 0]) - 25.0) < 1.5
+    assert abs(float(center[0, 0]) - 25.0) < 1e-3
     assert float(center_s[0, 0]) > 0.9
 
     # Still inside the echo cell, near the clear neighbor. dBZ does not step
@@ -390,7 +399,7 @@ def test_splat_does_not_invent_a_low_dbz_halo_beside_clear_air():
         dbz, lat, lon, np.array([[rim_lat]]), np.array([[mid_lon]]), cat
     )
     assert rim_cat[0, 0] == CAT_VALID
-    assert abs(float(rim[0, 0]) - 25.0) < 1.5
+    assert abs(float(rim[0, 0]) - 25.0) < 1e-3
     assert float(rim_s[0, 0]) < 0.35
     assert float(rim_s[0, 0]) < float(center_s[0, 0])
 
@@ -406,5 +415,63 @@ def test_splat_does_not_invent_a_low_dbz_halo_beside_clear_air():
         dbz, lat, lon, np.array([[float(lat[5])]]), np.array([[float(lon[8])]]), cat
     )
     assert core_cat[0, 0] == CAT_VALID
-    assert float(core[0, 0]) > 57.0
+    assert abs(float(core[0, 0]) - 60.0) < 1e-3
     assert float(core_s[0, 0]) > 0.9
+
+
+def test_spatial_peak_loss_keeps_narrow_cores_and_reports_zero_center_loss():
+    """Floydada-style core: one hot cell in lighter rain, skirt, then clear.
+
+    p3h measured on this shape before the seam replaced the four kernels:
+    the 68 dBZ cell center came back at 62.588 (loss 5.412), and a 30 dBZ
+    neighbor was lifted by as much as 2.319. p3i loss at cell centers is 0.
+    The shared face still blends, so the grid stair is not a hard step.
+    """
+    lat = np.arange(34.10, 33.90, -0.01, dtype=np.float64)
+    lon = np.arange(-101.50, -101.30, 0.01, dtype=np.float64)
+    dbz = np.full((lat.size, lon.size), np.nan, dtype=np.float32)
+    cat = np.full(dbz.shape, CAT_NO_ECHO, dtype=np.uint8)
+    dbz[8:12, 8:12] = 30.0
+    dbz[10, 10] = 68.0
+    cat[np.isfinite(dbz)] = CAT_VALID
+    # A missing cell beside the skirt must stay missing, not no-echo and not echo.
+    cat[8, 12] = CAT_MISSING
+    dbz[8, 12] = np.nan
+
+    report = spatial_peak_loss(dbz, lat, lon, cat)
+    assert report["spatial_revision"] == "p3i"
+    assert report["local_max_count"] == 1.0
+    assert report["local_max_raw"] == 68.0
+    assert report["local_max_post"] == 68.0
+    assert report["local_max_loss"] == 0.0
+    assert report["worst_local_max_loss"] == 0.0
+    assert report["field_max_raw"] == 68.0
+    assert report["field_max_loss"] == 0.0
+    assert report["center_abs_max"] < 1e-3
+    # The 30 dBZ neighbor of the core is not lifted into the core's color.
+    qlon, qlat = np.meshgrid(lon, lat)
+    post, post_cat, _edge = sample_masked_splat(dbz, lat, lon, qlat, qlon, cat)
+    assert abs(float(post[10, 11]) - 30.0) < 1e-3
+    assert post_cat[8, 12] == CAT_MISSING
+    assert np.isnan(post[8, 12])
+    assert post_cat[7, 10] == CAT_NO_ECHO
+    assert np.isnan(post[7, 10])
+
+    # Seam: halfway from the 68 cell toward the 30 cell is the average.
+    # A tenth of a cell in from the 68 center is still 68.
+    mid_lon = float(lon[10]) + 0.005
+    mid, mid_cat, _mid_s = sample_masked_splat(
+        dbz, lat, lon, np.array([[float(lat[10])]]), np.array([[mid_lon]]), cat
+    )
+    assert mid_cat[0, 0] == CAT_VALID
+    assert abs(float(mid[0, 0]) - 49.0) < 1e-2
+    inner, inner_cat, _inner_s = sample_masked_splat(
+        dbz,
+        lat,
+        lon,
+        np.array([[float(lat[10])]]),
+        np.array([[float(lon[10]) + 0.001]]),
+        cat,
+    )
+    assert inner_cat[0, 0] == CAT_VALID
+    assert abs(float(inner[0, 0]) - 68.0) < 1e-3

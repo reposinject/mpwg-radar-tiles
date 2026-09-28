@@ -204,7 +204,7 @@ def test_splat_contour_hides_the_square_edge_and_keeps_a_hot_core():
         dbz, lat, lon, np.array([[float(lat[8])]]), np.array([[float(lon[8])]]), cat
     )
     assert core_cat[0, 0] == CAT_VALID
-    # p3i keeps the cell center. p3h's color Gaussian left a core like this
+    # p3l keeps the cell center. p3h's color Gaussian left a core like this
     # several dBZ cooler than the source cell.
     assert abs(float(core[0, 0]) - 68.0) < 1e-3
 
@@ -305,7 +305,7 @@ def test_splat_echo_only_matches_the_contour_on_a_fixed_block():
     qlon = np.linspace(-98.02, -97.98, 5)
     qlon_g, qlat_g = np.meshgrid(qlon, qlat)
     got_dbz, got_cat, got_edge = sample_masked_splat(dbz, lat, lon, qlat_g, qlon_g, cat)
-    # Queries sit on cell centers. p3i copies the source dBZ there.
+    # Queries sit on cell centers. p3l copies the source dBZ there.
     # p3h's color Gaussian (σ=0.44) plus peak-pull turned this 62 into
     # 57.28 (loss 4.72) and lifted the 9 to 12.11. Edge scale at a center
     # stays solid; the square rim fades off-center, not here.
@@ -424,7 +424,7 @@ def test_spatial_peak_loss_keeps_narrow_cores_and_reports_zero_center_loss():
 
     p3h measured on this shape before the seam replaced the four kernels:
     the 68 dBZ cell center came back at 62.588 (loss 5.412), and a 30 dBZ
-    neighbor was lifted by as much as 2.319. p3i loss at cell centers is 0.
+    neighbor was lifted by as much as 2.319. p3l loss at cell centers is 0.
     The shared face still blends, so the grid stair is not a hard step.
     """
     lat = np.arange(34.10, 33.90, -0.01, dtype=np.float64)
@@ -439,7 +439,7 @@ def test_spatial_peak_loss_keeps_narrow_cores_and_reports_zero_center_loss():
     dbz[8, 12] = np.nan
 
     report = spatial_peak_loss(dbz, lat, lon, cat)
-    assert report["spatial_revision"] == "p3i"
+    assert report["spatial_revision"] == "p3l"
     assert report["local_max_count"] == 1.0
     assert report["local_max_raw"] == 68.0
     assert report["local_max_post"] == 68.0
@@ -475,3 +475,16 @@ def test_spatial_peak_loss_keeps_narrow_cores_and_reports_zero_center_loss():
     )
     assert inner_cat[0, 0] == CAT_VALID
     assert abs(float(inner[0, 0]) - 68.0) < 1e-3
+
+    # p3l exact core reaches 0.28 cell: 0.20 cell from the 68 center is still
+    # exact (p3i would already be blending there). Face mid stays 50/50.
+    near_core, near_cat, _ = sample_masked_splat(
+        dbz,
+        lat,
+        lon,
+        np.array([[float(lat[10])]]),
+        np.array([[float(lon[10]) + 0.002]]),
+        cat,
+    )
+    assert near_cat[0, 0] == CAT_VALID
+    assert abs(float(near_core[0, 0]) - 68.0) < 1e-3

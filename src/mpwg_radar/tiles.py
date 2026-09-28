@@ -186,19 +186,20 @@ def sample_masked_bilinear(
     return out_dbz, out_cat, edge_scale
 
 
-# p3i spatial stamp. One adjacent-cell resample replaces the p3h stack
-# (occupancy Gaussian σ=0.52, disc Gaussian σ=0.46, color Gaussian σ=0.44,
-# peak-pull σ=0.32). Those four kernels were the blur: a 68 dBZ cell sitting
-# in 30 dBZ rain left its own center at 62.6 dBZ, and the cooler neighbors
-# were lifted, which is the broad green→yellow→orange feather.
-# Retired wide color kernel was σ=1.35 (p3c). Do not put it back.
-SPATIAL_REVISION = "p3i"
+# p3l spatial stamp. Same one adjacent-cell seam as p3i (replaces the p3h
+# multi-kernel blur stack). p3i used _DETAIL_CORE=0.12 and left a ~0.55-cell
+# 10–90% face ramp across ~75% of each half-cell — soft enough that continuous
+# p3k colorize + Mapbox linear reads as blob soup. p3l raises the exact core
+# to 0.28 so the seam is narrower (~0.31-cell 10–90; blend area ~44% of the
+# half-cell) while the shared face is still 50/50 and cell centers stay exact
+# (spatial_peak_loss=0). No quantize, no blur restore, no fake sharpen.
+# Do not put the p3h kernels back.
+SPATIAL_REVISION = "p3l"
 # |offset from the cell center|, in MRMS cells, inside which dBZ is the
 # source cell exactly. Past this, a smoothstep reaches a 50/50 blend at the
-# shared face with a valid neighbor. 0.12 cell leaves the middle of a narrow
-# core untouched and still grades most of the cell, so the stair is not a
-# flat square and the core is not a multi-cell smear.
-_DETAIL_CORE = np.float32(0.12)
+# shared face with a valid neighbor. 0.28 keeps a wider exact core than p3i's
+# 0.12 so internal faces stay tighter without returning nearest-cell Lego.
+_DETAIL_CORE = np.float32(0.28)
 # Alpha inset toward a non-echo neighbor (no-echo, missing, or off the
 # mosaic). Starts here and reaches 0 at the cell edge. Echo neighbors do
 # not fade, so internal structure is not an alpha blur.
@@ -336,7 +337,7 @@ def sample_masked_splat(
     no-echo or missing stays that category, with NaN dBZ and edge scale 0,
     even next to a core. Inside echo, dBZ is the source cell until the outer
     seam, where two valid cells meet. Alpha insets only the rim that faces
-    clear air, missing data, or the mosaic edge. ``radius`` is unused: p3i
+    clear air, missing data, or the mosaic edge. ``radius`` is unused: p3l
     does not run a wide kernel. It stays so older callers still import.
     """
     src = np.asarray(dbz)
@@ -384,7 +385,7 @@ def spatial_peak_loss(
     ``sample_masked_splat`` at that cell's lat/lon. Loss is raw minus post:
     positive means the spatial stage cooled the cell. A local maximum is a
     valid cell strictly hotter than every valid 8-neighbor (an isolated cell
-    counts). p3i is exact at those centers. The retired p3h color Gaussian
+    counts). p3l is exact at those centers. The retired p3h color Gaussian
     was not: a 68 dBZ cell in 30 dBZ rain lost 5.4 dBZ at its own center.
     """
     src = np.asarray(dbz, dtype=np.float32)
@@ -484,7 +485,7 @@ def render_tile(
 
     ``nearest`` (composite) copies one MRMS cell into every pixel of that
     cell. ``masked-bilinear`` is the older in-mask blend and is not the RALA
-    path. ``masked-splat`` (RALA, p3i) keeps the nearest cell as the footprint
+    path. ``masked-splat`` (RALA, p3l) keeps the nearest cell as the footprint
     and runs one seam: cell centers stay on the source dBZ, the shared face
     of two echo cells blends, and clear air is never a sample or a paint target.
     """

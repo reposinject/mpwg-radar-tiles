@@ -152,7 +152,7 @@ def test_rala_piecewise_anchors_match_stops():
     assert pal.version == RALA_PALETTE_VERSION == "2026-09-rala-p3k"
     from mpwg_radar.tiles import SPATIAL_REVISION
 
-    assert SPATIAL_REVISION == "p3i"
+    assert SPATIAL_REVISION == "p3l"
     assert pal.min_dbz == -32.0
     derived = derive_rala_stops()
     assert [stop.dbz for stop in pal.stops] == [stop.dbz for stop in derived]
@@ -532,7 +532,7 @@ def test_rala_p3k_densifies_mid_high_and_locks_p3j_endpoints():
     """−32..20 and 65+ match p3j. 30→32 is no longer the cliff; 32–48 is steeper."""
     pal = load_palette("mpwg-rala-2026-09")
     assert "RadarScope" in pal.description
-    assert "stays p3i" in pal.description
+    assert "p3l" in pal.description
     assert "PENDING" in pal.description
     # These knots are every p3j stop through 20, so the 0.1 LUT below 20 is fixed.
     for dbz, rgba in _P3H_THROUGH_20.items():

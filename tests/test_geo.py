@@ -3,6 +3,9 @@ from __future__ import annotations
 from mpwg_radar.geo import (
     CENTRAL_TEXAS,
     CONUS,
+    CONUS_MAX_ZOOM,
+    CONUS_MIN_ZOOM,
+    RALA_CONUS_MAX_ZOOM,
     count_tiles,
     latlon_to_global_xy,
     parse_bbox,
@@ -55,8 +58,12 @@ def test_conus_covers_lower_48_not_ak_hi():
 def test_conus_tile_counts_match_documented_band():
     by_zoom = tiles_by_zoom(CONUS, 5, 9)
     assert by_zoom == {5: 35, 6: 126, 7: 442, 8: 1734, 9: 6600}
-    assert count_tiles(CONUS, 6, 8) == 2302
-    assert count_tiles(CONUS, 6, 9) == 8902
+    assert CONUS_MIN_ZOOM == 6
+    assert CONUS_MAX_ZOOM == 8
+    assert RALA_CONUS_MAX_ZOOM == 9
+    assert count_tiles(CONUS, CONUS_MIN_ZOOM, CONUS_MAX_ZOOM) == 2302
+    assert count_tiles(CONUS, CONUS_MIN_ZOOM, RALA_CONUS_MAX_ZOOM) == 8902
+    assert count_tiles(CONUS, 6, 9) - count_tiles(CONUS, 6, 8) == 6600
     assert count_tiles(CONUS, 5, 8) == 2337
 
 

@@ -48,10 +48,15 @@ class BBox:
 #
 # Candidate 512px XYZ tiles that intersect this bbox (inclusive):
 #   z5=35  z6=126  z7=442  z8=1734  z9=6600
-# Production default on t4g.small (~3 min timer) is z6–8 = 2302 tiles/frame.
-# z6–9 = 8902 candidates; z9 alone is 6600 and will overrun a t4g.small cook
-# on a busy nationwide precip day even with empty-tile skip. Keep z6–9 for a
-# larger host via MPWG_MIN_ZOOM/MPWG_MAX_ZOOM.
+# Composite on t4g.small (~3 min timer) stays z6–8 = 2302 tiles/frame.
+# RALA default is z6–9 = 8902 candidates; z9 alone is 6600. Empty-tile skip
+# and empty-parent pruning render z9 only where a parent tile has echo, so
+# a quiet frame stays near the z6–8 cost. A nationwide precip day can write
+# up to about 4× the z8 echo tiles and slip the 2-minute cadence. Peak RAM
+# does not grow with the candidate count (one shared grid, two in-flight
+# 512px tiles). Do not raise composite to z9 on this host.
+# MPWG_MAX_ZOOM is the composite knob (default 8). MPWG_RALA_MAX_ZOOM is
+# the RALA knob (default 9).
 CONUS = BBox(
     west=-130.0,
     south=20.0,
@@ -75,9 +80,11 @@ REGIONS = {
     "central-texas": CENTRAL_TEXAS,
 }
 
-# Default production zoom band for CONUS on t4g.small. See CONUS comment.
+# Default production zoom band for composite CONUS on t4g.small. See CONUS
+# comment. RALA uses RALA_CONUS_MAX_ZOOM so close zooms are native tiles.
 CONUS_MIN_ZOOM = 6
 CONUS_MAX_ZOOM = 8
+RALA_CONUS_MAX_ZOOM = 9
 
 
 def parse_bbox(text: str, name: str = "custom") -> BBox:

@@ -17,7 +17,7 @@ from typing import Dict, Iterator, List, Optional, Tuple
 import numpy as np
 
 from mpwg_radar.config import CookerConfig, load_config
-from mpwg_radar.geo import count_tiles, tiles_by_zoom
+from mpwg_radar.geo import CONUS_MAX_ZOOM, CONUS_MIN_ZOOM, count_tiles, tiles_by_zoom
 from mpwg_radar.grib import ReflectivityFrame, decode_grib2, frame_id_for
 from mpwg_radar.ingest import (
     IngestError,
@@ -700,6 +700,12 @@ def _write_manifest(
             entry["display_min_dbz"] = palette.min_dbz
             entry["modes"] = this_modes
             entry["latest"] = product.tile_url_template(cfg.modes[0], "latest")
+            # Per-product native zoom. Top-level min/max stay the composite
+            # band so a composite client does not request z9 keys that were
+            # never cooked. RALA clients read products.rala.max_zoom (and
+            # frame.json max_zoom) to set maxNativeZoom.
+            entry["min_zoom"] = cfg.min_zoom
+            entry["max_zoom"] = cfg.max_zoom
             if product.id == "rala":
                 primary_frames = this_modes.get(cfg.modes[0], {}).get("frames") or []
                 entry["retention"] = {
@@ -732,11 +738,14 @@ def _write_manifest(
             entry.setdefault("available", bool(entry.get("modes")))
         products_block[pid] = entry
 
-    # Top-level modes stay the composite tree so existing clients keep working.
+    # Top-level modes and zoom stay the composite tree so existing clients
+    # keep working. A RALA cook must not advertise z9 as the composite band.
     if product.id == DEFAULT_PRODUCT_ID:
         top_modes = this_modes
         top_palette = palette.as_dict()
         top_default_mode = cfg.modes[0]
+        top_min_zoom = cfg.min_zoom
+        top_max_zoom = cfg.max_zoom
         top_valid = frame.valid_time.astimezone(timezone.utc).isoformat()
     else:
         top_modes = existing.get("modes") or {}
@@ -746,6 +755,8 @@ def _write_manifest(
             top_modes = comp.get("modes") or top_modes
             top_palette = comp.get("palette") or top_palette
         top_default_mode = existing.get("default_mode") or "clean"
+        top_min_zoom = int(existing.get("min_zoom", CONUS_MIN_ZOOM))
+        top_max_zoom = int(existing.get("max_zoom", CONUS_MAX_ZOOM))
         top_valid = existing.get("latest_valid_time") or frame.valid_time.astimezone(
             timezone.utc
         ).isoformat()
@@ -756,8 +767,8 @@ def _write_manifest(
         "region": cfg.region_name,
         "bbox": cfg.bbox.as_dict(),
         "tile_size": cfg.tile_size,
-        "min_zoom": cfg.min_zoom,
-        "max_zoom": cfg.max_zoom,
+        "min_zoom": top_min_zoom,
+        "max_zoom": top_max_zoom,
         "scheme": "xyz",
         "crs": "EPSG:3857",
         "palette": top_palette,

@@ -34,6 +34,7 @@ def test_rala_timeout_covers_archive_catchup_without_raising_composite():
     rala_directives = _directives(rala)
     assert "TimeoutStartSec=4200" in rala_directives
     assert "Environment=MPWG_RALA_UPLOAD_CONCURRENCY=8" in rala_directives
+    assert "Environment=MPWG_RALA_MAX_ZOOM=9" in rala_directives
     assert "Environment=MPWG_TILE_WORKERS=2" in rala_directives
     assert "Environment=MPWG_KEEP_DBZ=0" in rala_directives
     assert "TimeoutStartSec=1800" in _directives(composite)

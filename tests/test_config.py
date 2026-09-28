@@ -3,7 +3,13 @@ from __future__ import annotations
 import pytest
 
 from mpwg_radar.config import CookerConfig, load_config, resolve_region_bbox
-from mpwg_radar.geo import CENTRAL_TEXAS, CONUS, CONUS_MAX_ZOOM, CONUS_MIN_ZOOM
+from mpwg_radar.geo import (
+    CENTRAL_TEXAS,
+    CONUS,
+    CONUS_MAX_ZOOM,
+    CONUS_MIN_ZOOM,
+    RALA_CONUS_MAX_ZOOM,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -42,6 +48,32 @@ def test_load_config_defaults(monkeypatch):
     assert cfg.max_zoom == 8
     assert cfg.product_id == "composite"
     assert cfg.r2.upload_timeout_seconds == 900
+
+
+def test_rala_max_zoom_ignores_shared_composite_cap(monkeypatch):
+    monkeypatch.setenv("MPWG_PRODUCT", "rala")
+    monkeypatch.setenv("MPWG_MAX_ZOOM", "8")
+    monkeypatch.setenv("MPWG_MIN_ZOOM", "6")
+    monkeypatch.delenv("MPWG_RALA_MAX_ZOOM", raising=False)
+    cfg = load_config()
+    assert cfg.min_zoom == CONUS_MIN_ZOOM == 6
+    assert cfg.max_zoom == RALA_CONUS_MAX_ZOOM == 9
+    assert cfg.product_id == "rala"
+    monkeypatch.setenv("MPWG_RALA_MAX_ZOOM", "8")
+    pinned = load_config()
+    assert pinned.max_zoom == 8
+    # CLI --max-zoom wins over the RALA default.
+    overridden = load_config({"product_id": "rala", "max_zoom": 7})
+    assert overridden.max_zoom == 7
+    monkeypatch.setenv("MPWG_PRODUCT", "composite")
+    monkeypatch.delenv("MPWG_RALA_MAX_ZOOM", raising=False)
+    composite = load_config()
+    assert composite.max_zoom == CONUS_MAX_ZOOM == 8
+    # --product rala on a composite env still takes the RALA band.
+    via_flag = load_config({"product_id": "rala"})
+    assert via_flag.product_id == "rala"
+    assert via_flag.max_zoom == 9
+    assert via_flag.min_zoom == 6
 
 
 def test_load_config_product_rala_ignores_leftover_composite_url(monkeypatch):

@@ -20,16 +20,30 @@ No paid radar vendor. Alaska and Hawaii are outside the NOAA MRMS CONUS mosaic.
 
 Default region **`conus`**: `west=-130, south=20, east=-60, north=55` — NOAA MRMS CONUS mosaic (0.01° grid), production product `MergedReflectivityQCComposite`. Lower 48, Gulf, near-shore Atlantic/Pacific, northern Mexico, southern Canada. Not Alaska or Hawaii.
 
-Default zooms **6–8** (512 px tiles). Candidate tiles per frame (every XYZ cell that intersects the bbox, including empty ocean):
+**Composite** zooms **6–8**. **RALA** zooms **6–9** (p3m: native close-zoom tiles, same 512 px sample as z8, not a stretched z8). Min zoom stays 6 for both. `MPWG_MAX_ZOOM` is the composite knob. `MPWG_RALA_MAX_ZOOM` is the RALA knob (the RALA unit pins `9`, so a shared `MPWG_MAX_ZOOM=8` in `/etc/mpwg-radar.env` does not leave RALA on z8).
 
-| Zoom band | Tiles / frame | Why |
+Candidate 512 px XYZ tiles per frame (every cell that intersects the bbox, including empty ocean):
+
+| Zoom | Candidates |
+| --- | --- |
+| z5 | 35 |
+| z6 | 126 |
+| z7 | 442 |
+| z8 | 1734 |
+| z9 | 6600 |
+
+| Zoom band | Candidates / frame | Who |
 | --- | --- | --- |
-| **6–8 (default)** | **2302** (z6=126, z7=442, z8=1734) | Fits `t4g.small` on the ~3 min timer with empty-tile skip |
-| 5–8 | 2337 | z5 is only +35 tiles if the map needs a national overview |
-| 6–9 | 8902 | z9 alone is 6600; too many for t4g.small on a busy precip day |
+| **6–8** | **2302** | **Composite** default. Fits `t4g.small` on the ~3 min timer |
+| 5–8 | 2337 | z5 is +35 if the composite map needs a national overview (`MPWG_MIN_ZOOM=5`) |
+| **6–9** | **8902** | **RALA** default. z9 adds 6600 candidates on top of the 2302 |
 | `central-texas` 6–9 | 80 | Local smoke / cheap debug crop |
 
-Empty tiles are skipped (not written). The optional Worker returns a transparent PNG for missing keys, so clear air stays clear instead of purple 404s.
+Empty tiles are skipped (not written). An empty parent tile is recorded so its children are not scanned. `tile_has_echo` is a category-window check, not a 512 px splat, and clear-air pixels inside an echo tile are skipped in the masked splat. The optional Worker returns a transparent PNG for missing keys, so clear air stays clear instead of purple 404s.
+
+**Capacity on `t4g.small` (2 vCPU, `MemoryMax=1536M`).** z9 is not 6600 renders. Cost follows echo area. A quiet mosaic stays near today's z6–8 cook because an empty z8 parent drops its four z9 children. Where echo fills a z8 tile, z9 writes up to four native 512 px tiles. A frame that uploads ~800–1000 objects at z6–8 can add on the order of 2–4× that many z9 PNGs on a widespread precip day. That can run past the 2-minute MRMS cadence (extra minutes of splat and upload). It does not raise peak RAM: the CONUS grid is shared and two 512 px tiles are in flight. The 75-minute archive and 2700s catch-up still cook scans that arrive during a long frame, newest first. Composite stays z6–8 so this host is not also painting composite z9. To put RALA back on z8, set `MPWG_RALA_MAX_ZOOM=8` in a unit drop-in (the unit's `Environment=` line wins over the env file).
+
+`frame.json` `max_zoom` and `manifest.json` → `products.rala.max_zoom` are **9** after a RALA cook. Top-level `min_zoom` / `max_zoom` stay the **composite** band (6–8) so a composite source does not request z9 keys that were never cooked. Set the RALA map source `maxzoom` / `maxNativeZoom` from `products.rala.max_zoom`.
 
 Named region `central-texas` (`west=-100.25, south=28.85, east=-96.15, north=32.55`) remains for smoke tests.
 
@@ -39,8 +53,9 @@ Env (also accepted as unprefixed `REGION` / `BBOX`):
 | --- | --- | --- |
 | `MPWG_REGION` | `conus` | `conus` or `central-texas` |
 | `MPWG_BBOX` | (unset) | Optional `west,south,east,north` override in degrees |
-| `MPWG_MIN_ZOOM` | `6` | Inclusive |
-| `MPWG_MAX_ZOOM` | `8` | Inclusive; do not set `9` on t4g.small |
+| `MPWG_MIN_ZOOM` | `6` | Inclusive. Shared by composite and RALA |
+| `MPWG_MAX_ZOOM` | `8` | Inclusive composite cap. Leave `8` on t4g.small |
+| `MPWG_RALA_MAX_ZOOM` | `9` | Inclusive RALA cap. Ignores `MPWG_MAX_ZOOM`. The RALA unit pins `9` |
 | `MPWG_TILE_SIZE` | `512` | Production contract |
 | `MPWG_MODES` | `clean` | `clean`, or `clean,standard,all` |
 | `MPWG_PRODUCT` | `composite` | Manual cook default. Leave `composite` in `/etc/mpwg-radar.env`. The RALA unit sets `rala` for that process only. |
@@ -330,7 +345,7 @@ The oneshot unit runs:
 /opt/mpwg-radar/.venv/bin/mpwg-radar cook
 ```
 
-Memory is capped at 1536M. Default CONUS zooms are **6–8** (~2302 candidate tiles/frame). Empty tiles are skipped before the 512×512 render, and an empty parent tile skips its children. The composite oneshot sets `TimeoutStartSec=1800`. The RALA oneshot sets `TimeoutStartSec=4200`, and `ec2-setup.sh` installs `mpwg-radar-cooker-rala.service.d/zz-catchup-timeout.conf` so a host drop-in of `TimeoutStartSec=1800` cannot SIGTERM a multi-frame catch-up. A long cook delays the next timer shot; it does not change the composite product.
+Memory is capped at 1536M. Composite CONUS zooms are **6–8** (~2302 candidate tiles/frame). RALA CONUS zooms are **6–9** (~8902 candidates; empty tiles are not rendered). Empty tiles are skipped before the 512×512 render, and an empty parent tile skips its children. The composite oneshot sets `TimeoutStartSec=1800`. The RALA oneshot sets `TimeoutStartSec=4200`, and `ec2-setup.sh` installs `mpwg-radar-cooker-rala.service.d/zz-catchup-timeout.conf` so a host drop-in of `TimeoutStartSec=1800` cannot SIGTERM a multi-frame catch-up. A long cook delays the next timer shot; it does not change the composite product.
 
 ### Deploy note — Sep 2026 Clean palette (15 dBZ display cutoff)
 
@@ -376,7 +391,13 @@ sudo systemctl status mpwg-radar-cooker.timer
 journalctl -u mpwg-radar-cooker.service -n 80 -f
 ```
 
-Confirm the new `manifest.json` has `"region": "conus"`, the CONUS bbox, and `min_zoom`/`max_zoom` 6–8. Map clients that still request z9 should set `maxzoom` / `maxNativeZoom` to 8 (or overzoom from z8).
+Confirm the new `manifest.json` has `"region": "conus"`, the CONUS bbox, and top-level `min_zoom`/`max_zoom` 6–8 (composite). RALA native zoom is `products.rala.max_zoom` (9; see [CONUS crop and zooms](#conus-crop-and-zooms)). A composite client keeps `maxzoom` / `maxNativeZoom` at 8.
+
+### Deploy note — RALA native tiles through z9 (p3m)
+
+Zoom capacity only. Spatial stamp stays `p3l` (`_DETAIL_CORE` unchanged). Palette stays `2026-09-rala-p3k`. QC, the no-echo / missing mask, and the loop are unchanged. Composite stays z6–8.
+
+Leave `MPWG_PRODUCT=composite` and `MPWG_MAX_ZOOM=8` in `/etc/mpwg-radar.env`. The RALA unit sets `MPWG_RALA_MAX_ZOOM=9` after `EnvironmentFile`, so that shared `8` does not cap RALA. On a cooked RALA `frame.json`, `max_zoom` is 9. On `manifest.json`, `products.rala.max_zoom` is 9 and top-level `max_zoom` stays the composite band. Point the RALA map source `maxzoom` / `maxNativeZoom` at 9 so Mapbox stops stretching z8. A nationwide precip day can slip the 2-minute cadence; empty-tile skip keeps a quiet frame near the old cost. See [CONUS crop and zooms](#conus-crop-and-zooms). Do not start that cook from this change until it is merged.
 
 ### Deploy note — RALA p3k denser mid/high LUT (Sep 28)
 
@@ -514,10 +535,17 @@ map.addLayer({
 
 If `R2_PREFIX=radar`, the path is `/radar/clean/latest/{z}/{x}/{y}.png`. Poll `manifest.json` for animation frames and `products`.
 
-RALA preview (after a rala cook; production default stays composite):
+RALA preview (after a rala cook; production default stays composite). `maxzoom` is the native tile cap (`products.rala.max_zoom` / `frame.json` `max_zoom`). Leaflet uses the same number as `maxNativeZoom`.
 
 ```js
-tiles: ['https://YOUR_DOMAIN/radar/rala/clean/latest/{z}/{x}/{y}.png']
+map.addSource('mpwg-rala', {
+  type: 'raster',
+  tiles: ['https://YOUR_DOMAIN/radar/rala/clean/latest/{z}/{x}/{y}.png'],
+  tileSize: 512,
+  minzoom: 6,
+  maxzoom: 9,
+  attribution: 'NOAA MRMS ReflectivityAtLowestAltitude'
+});
 ```
 
 ## Dependencies

@@ -11,6 +11,7 @@ from mpwg_radar.geo import (
     CONUS,
     CONUS_MAX_ZOOM,
     CONUS_MIN_ZOOM,
+    RALA_CONUS_MAX_ZOOM,
     REGIONS,
     BBox,
     parse_bbox,
@@ -92,6 +93,9 @@ class CookerConfig:
     bbox: BBox = field(default_factory=lambda: CONUS)
     modes: List[str] = field(default_factory=lambda: ["clean"])
     min_zoom: int = CONUS_MIN_ZOOM
+    # Composite default. load_config raises RALA to RALA_CONUS_MAX_ZOOM
+    # unless --max-zoom or MPWG_RALA_MAX_ZOOM is set. MPWG_MAX_ZOOM does
+    # not cap RALA; hosts keep that shared knob at 8 for composite.
     max_zoom: int = CONUS_MAX_ZOOM
     tile_size: int = 512
     skip_empty_tiles: bool = True
@@ -211,7 +215,7 @@ def load_config(overrides: Optional[dict] = None) -> CookerConfig:
         bbox=bbox,
         modes=_csv(os.environ.get("MPWG_MODES"), ["clean"]),
         min_zoom=int(os.environ.get("MPWG_MIN_ZOOM", str(CONUS_MIN_ZOOM))),
-        max_zoom=int(os.environ.get("MPWG_MAX_ZOOM", str(CONUS_MAX_ZOOM))),
+        max_zoom=_max_zoom(product_id),
         tile_size=int(os.environ.get("MPWG_TILE_SIZE", "512")),
         skip_empty_tiles=_truthy(os.environ.get("MPWG_SKIP_EMPTY_TILES"), True),
         tile_workers=_tile_workers(product_id),
@@ -278,8 +282,30 @@ def load_config(overrides: Optional[dict] = None) -> CookerConfig:
         cfg.r2.upload_concurrency = _upload_concurrency(cfg.product_id)
     if not overrides or "tile_workers" not in overrides:
         cfg.tile_workers = _tile_workers(cfg.product_id)
+    # After --product. A shared MPWG_MAX_ZOOM=8 must not keep RALA on z8.
+    # An explicit --max-zoom (overrides["max_zoom"]) wins for that cook.
+    if not overrides or "max_zoom" not in overrides:
+        cfg.max_zoom = _max_zoom(cfg.product_id)
     cfg.validate()
     return cfg
+
+
+def _max_zoom(product_id: str) -> int:
+    """Composite follows MPWG_MAX_ZOOM (default 8). RALA defaults to 9.
+
+    ``/etc/mpwg-radar.env`` sets ``MPWG_MAX_ZOOM=8`` for the composite timer.
+    RALA ignores that shared knob. ``MPWG_RALA_MAX_ZOOM`` is the RALA cap
+    (the RALA unit pins 9). Min zoom stays ``MPWG_MIN_ZOOM`` for both.
+    """
+    if product_id == "rala":
+        raw = os.environ.get("MPWG_RALA_MAX_ZOOM")
+        if raw is not None and str(raw).strip():
+            return int(raw)
+        return RALA_CONUS_MAX_ZOOM
+    raw = os.environ.get("MPWG_MAX_ZOOM")
+    if raw is not None and str(raw).strip():
+        return int(raw)
+    return CONUS_MAX_ZOOM
 
 
 def _tile_workers(product_id: str) -> int:

@@ -246,6 +246,13 @@ def test_rala_cook_writes_prefixed_tiles_and_keeps_composite(tmp_path: Path):
     assert rala_frame["mode_spec"]["smooth_kind"] == "masked-splat"
     assert rala_frame["mode_spec"]["spatial"] == "p3l"
     assert rala_frame["palette"]["version"] == "2026-09-rala-p3k"
+    assert rala_frame["min_zoom"] == 6
+    assert rala_frame["max_zoom"] == 6
+    assert manifest["min_zoom"] == 6
+    assert manifest["max_zoom"] == 6
+    assert manifest["products"]["composite"]["max_zoom"] == 6
+    assert manifest["products"]["rala"]["min_zoom"] == 6
+    assert manifest["products"]["rala"]["max_zoom"] == 6
     assert rala_frame["valid_time"].endswith("+00:00")
     comp_frame = json.loads(
         (tmp_path / "radar" / "clean" / "latest" / "frame.json").read_text()
@@ -270,6 +277,54 @@ def test_rala_cook_writes_prefixed_tiles_and_keeps_composite(tmp_path: Path):
 
     with Image.open(tiles[0]) as im:
         assert im.size == (512, 512)
+
+
+def test_rala_manifest_zoom_stays_off_the_composite_band(tmp_path: Path):
+    """RALA z9 is on the product entry and frame.json, not top-level max_zoom."""
+    radar = tmp_path / "radar"
+    radar.mkdir()
+    frame = synthetic_central_texas()
+    composite = CookerConfig(
+        bbox=CENTRAL_TEXAS,
+        region_name="central-texas",
+        modes=["clean"],
+        min_zoom=6,
+        max_zoom=8,
+        output_dir=tmp_path,
+        product_id="composite",
+    )
+    _write_manifest(
+        composite,
+        load_palette("mpwg-clean-2026-09"),
+        radar,
+        frame,
+        [],
+        get_product("composite"),
+    )
+    rala_cfg = CookerConfig(
+        bbox=CENTRAL_TEXAS,
+        region_name="central-texas",
+        modes=["clean"],
+        min_zoom=6,
+        max_zoom=9,
+        output_dir=tmp_path,
+        product_id="rala",
+    )
+    manifest = _write_manifest(
+        rala_cfg,
+        load_palette("mpwg-rala-2026-09"),
+        radar,
+        frame,
+        [],
+        get_product("rala"),
+    )
+    assert manifest["min_zoom"] == 6
+    assert manifest["max_zoom"] == 8
+    assert manifest["products"]["composite"]["min_zoom"] == 6
+    assert manifest["products"]["composite"]["max_zoom"] == 8
+    assert manifest["products"]["rala"]["min_zoom"] == 6
+    assert manifest["products"]["rala"]["max_zoom"] == 9
+    assert manifest["products"]["rala"]["palette"]["version"] == "2026-09-rala-p3k"
 
 
 def test_unchanged_frame_skips_second_cook(tmp_path: Path):

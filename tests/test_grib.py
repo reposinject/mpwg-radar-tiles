@@ -125,6 +125,45 @@ def test_mask_fill_sentinels():
     assert out[0, 2] == 12.0
 
 
+def test_conus_axes_stay_float64_so_far_cells_round_trip(tmp_path: Path):
+    """A float32 0.01° axis drifts by more than one cell by mid-CONUS.
+
+    Column 3500 is about 105°W on the real mosaic. With float32 axes the
+    sampler's nearest cell is the neighbor and the p3l center is a blend.
+    """
+    from mpwg_radar.geo import lon_to_180
+    from mpwg_radar.products import CAT_VALID
+    from mpwg_radar.tiles import sample_masked_splat
+
+    ni = 4200
+    nj = 6
+    col = 3500
+    row = 3
+    grid = np.full((nj, ni), -99.0, dtype=np.float32)
+    grid[:, col - 2 : col + 3] = 15.0
+    grid[row - 1 : row + 2, col] = 61.0
+    lat0 = 54.995
+    lon0 = 230.005
+    blob = build_png_grib2(grid, lat_first=lat0, lon_first=lon0)
+    path = tmp_path / "wide.grib2"
+    path.write_bytes(blob)
+    frame = decode_grib2(path, product="ReflectivityAtLowestAltitude")
+    assert frame.lat.dtype == np.float64
+    assert frame.lon.dtype == np.float64
+    lat = lat0 - row * 0.01
+    lon = lon_to_180(lon0) + col * 0.01
+    post, cat, _edge = sample_masked_splat(
+        frame.dbz,
+        frame.lat,
+        frame.lon,
+        np.array([[lat]]),
+        np.array([[lon]]),
+        frame.category,
+    )
+    assert cat[0, 0] == CAT_VALID
+    assert abs(float(post[0, 0]) - 61.0) < 1e-3
+
+
 def test_decode_png_grib_classifies_sentinels(tmp_path: Path):
     grid = np.full((8, 10), -999.0, dtype=np.float32)
     grid[1:4, 1:5] = -99.0

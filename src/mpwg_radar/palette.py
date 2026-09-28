@@ -3,15 +3,16 @@
 The cooker always stores/resamples reflectivity in dBZ. This module is the
 only place that applies a palette. Composite uses the MPWG Clean palette
 (James, Sep 2026): values below 15 dBZ are transparent. RALA uses palette
-revision 2026-09-rala-p3j. Spatial stays p3i: the tile resample lives in
+revision 2026-09-rala-p3k. Spatial stays p3i: the tile resample lives in
 tiles.py, not in this LUT. The ramp is piecewise RGBA on actual dBZ
 (0.1 dBZ LUT, half-up index, no rescale). Stops through 20 dBZ are the
-p3h weak band: faint blue-gray, pale blue, cool blue, cyan, blue-green,
-then weak green into the deep green at 20. From 25 through 60 the mid
-and high anchors are pulled off the RGB corners so green, yellow, orange,
-and red stay in family without the p3h neon. Magenta still starts past
-60 and is hot at 65. Ordinary green starts later than p3g. Alpha stays
-on the quiet curve through 10 dBZ and is fully opaque from 20 up.
+p3j weak band: faint blue-gray, pale blue, cool blue, cyan, blue-green,
+then weak green into the deep green at 20. p3k densifies the continuous
+25–60 hinges so neighboring mid and high dBZ stay distinguishable, still
+off the RGB corners: yellow-green into yellow at 31.7, orange through
+about 48, red from about 50. Magenta is unchanged and is hot at 65.
+Ordinary green starts later than p3g. Alpha stays on the quiet curve
+through 10 dBZ and is fully opaque from 20 up.
 colorize() does not mutate the input array. The calibration strip and
 the dBZ probe call that same colorize().
 Transparency for no-echo and missing is a category mask, not a dBZ cutoff,
@@ -74,16 +75,18 @@ FAMILY_PROOF_PAIRS: Tuple[Tuple[float, float], ...] = (
 )
 
 # Palette stamp. The spatial resample is tiles.SPATIAL_REVISION ("p3i").
-RALA_PALETTE_VERSION = "2026-09-rala-p3j"
+RALA_PALETTE_VERSION = "2026-09-rala-p3k"
 
 # RGB control points. Alpha is not stored here; rala_opacity() supplies it.
 # p3g cooled the floor through 10 dBZ, but 12.5–17.5 was already ordinary
 # green, so a drizzle shield still read as rain. These weak taps hold pale
 # blue, cool blue, cyan, and blue-green further up. Ordinary green arrives
-# only as the ramp meets the 20 dBZ deep green, which p3j leaves in place.
-# p3j retunes 25–60 only: deep green instead of neon, a yellow that is not
-# laser, orange that stays orange through the upper 40s, and a red core
-# that is not pure 255. 65 and 70 stay the hot magenta extreme.
+# only as the ramp meets the 20 dBZ deep green. Stops through 20 dBZ, and
+# the 22.5 rich green, are the p3j bytes. p3k only retunes the continuous
+# 25–60 hinges: a yellow-green bridge into yellow at 31.7 (not a 30→32
+# cliff), gold into orange that is still orange at 48, and red from 50.
+# None of those taps sit on a pure laser corner. 65 and 70 stay the hot
+# magenta extreme, byte-identical to p3j.
 _RALA_SAMPLE_RGB: Tuple[Tuple[float, Tuple[int, int, int]], ...] = (
     (0.0, (118, 156, 196)),
     (2.0, (84, 138, 206)),
@@ -93,14 +96,30 @@ _RALA_SAMPLE_RGB: Tuple[Tuple[float, Tuple[int, int, int]], ...] = (
     (12.5, (16, 174, 170)),
     (15.0, (14, 166, 128)),
     (20.0, (8, 142, 18)),
-    (25.0, (16, 164, 14)),
-    (30.0, (64, 172, 12)),
-    (32.0, (216, 196, 10)),
-    (40.0, (224, 138, 8)),
-    (48.0, (204, 84, 10)),
-    (50.0, (196, 22, 14)),
-    (56.0, (148, 8, 16)),
+    # Pinned p3j green. Keeps the 20→22.5 segment byte-identical.
+    (22.5, (12, 153, 16)),
+    (24.8, (14, 160, 14)),
+    # Warmer than the first 27 / 30 sketch so the green→yellow turn is
+    # staged across 27–31.7. 30 stays green-led (G above R).
+    (27.0, (44, 176, 12)),
+    (30.0, (120, 188, 12)),
+    (31.7, (200, 200, 12)),
+    (33.5, (214, 188, 10)),
+    (35.0, (220, 174, 9)),
+    (37.5, (222, 156, 9)),
+    (39.7, (224, 140, 8)),
+    (42.0, (218, 118, 9)),
+    # Slightly deeper orange than the first 45 / 48.3 sketch so the upper
+    # 40s are not the flat tail. Still orange: red onset is the 50 hinge.
+    (45.0, (210, 88, 10)),
+    (48.3, (200, 66, 10)),
+    (50.0, (196, 28, 14)),
+    (52.5, (180, 16, 15)),
+    (54.5, (164, 10, 16)),
+    (56.4, (148, 8, 18)),
+    (58.5, (140, 6, 40)),
     (60.0, (136, 6, 56)),
+    (62.0, (170, 4, 120)),
     (65.0, (255, 0, 255)),
     (70.0, (255, 12, 255)),
 )
@@ -431,7 +450,7 @@ def _color_on_controls(dbz: float, controls: Sequence[Tuple[float, RGBA]]) -> RG
 
 
 def derive_rala_stops() -> List[PaletteStop]:
-    """Dense p3j stops. Anchor RGB is the control table; in-between stops are computed.
+    """Dense p3k stops. Anchor RGB is the control table; in-between stops are computed.
 
     Stops sit on every 2.5 dBZ from 0 through 75, plus the calibration
     anchors, the 20 dBZ opaque knot, the -32 wisp, and white at 75.
@@ -471,19 +490,23 @@ def rala_palette_document() -> dict:
         "author": "James",
         "version": RALA_PALETTE_VERSION,
         "description": (
-            "Phase 3j LUT on the locked p3i spatial seam (2026-09-rala-p3j). "
+            "Phase 3k LUT on the locked p3i spatial seam (2026-09-rala-p3k). "
+            "Denser mid/high hinges for a RadarScope match: continuous 25–60 "
+            "dBZ stops so neighboring dBZ stay visually distinguishable. "
             "Spatial revision stays p3i: one adjacent-cell seam, cell centers "
-            "keep source dBZ, and clear air is not a sample. Piecewise RGBA "
-            "on actual dBZ, 0.1 dBZ LUT, half-up, no rescale. Anchors near "
-            "2, 10, 20, 25, 32, 40, 48, 56, and 65 dBZ. Stops through 20 dBZ "
-            "match p3h: faint blue-gray, pale blue, cool blue, cyan, "
-            "blue-green, then weak green into the 20 dBZ deep green. From "
-            "25 through 60 the mid and high stops leave the p3h RGB corners: "
-            "deep green through 30, a strong yellow that is not laser, "
-            "orange that stays orange through the upper 40s, and a red core "
-            "that is not pure 255 red. 65 stays hot magenta and the extreme "
-            "holds past 65 before white at 75. Pink/magenta live validation "
-            "is pending. Alpha follows 56 + 199*t^2 through 10 dBZ, then a "
+            "keep source dBZ, and clear air is not a sample. No blur restore "
+            "and no fake sharpen. Piecewise RGBA on actual dBZ, 0.1 dBZ LUT, "
+            "half-up, no rescale. Anchors are hinges, not solid-color buckets, "
+            "near 2, 10, 20, 24.8, 31.7, 39.7, 48.3, 56.4, and 65 dBZ. Stops "
+            "through 20 dBZ are byte-identical to p3j, including alphas: faint "
+            "blue-gray, pale blue, cool blue, cyan, blue-green, then weak green "
+            "into the 20 dBZ deep green. 22.5 stays the p3j rich green. The "
+            "ramp then warms through yellow-green into a yellow hinge at 31.7, "
+            "gold into orange that stays orange through about 48, and a red "
+            "onset near 50. Greens, yellows, oranges, and reds stay off the "
+            "pure laser RGB corners. 65, 67.5, 70, 72.5, and 75 stay the p3j "
+            "hot magenta into white. Pink/magenta live validation is still "
+            "PENDING. Alpha follows 56 + 199*t^2 through 10 dBZ, then a "
             "smoothstep to 255 at 20, so yellow, orange, red, and magenta "
             "are fully opaque. No cutoff at 10. No-echo and missing stay "
             "alpha 0 via the category mask. No global saturation filter. "

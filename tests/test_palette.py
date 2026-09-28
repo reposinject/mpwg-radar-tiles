@@ -110,17 +110,23 @@ def test_colorbar_starts_at_display_cutoff():
     assert arr[0, -1, 3] == 255
 
 
-# p3j calibration anchors. 2, 10, and 20 are the p3h colors. 25–56 are the
-# calmed mid/high. 65 is still hot magenta. Alpha is still the ramp.
+# p3k hinges. 2, 10, and 20 are the p3h/p3j colors. 22.5 is the pinned p3j
+# green. 24.8–62 are the denser mid/high. 65 is still hot magenta.
 RALA_ANCHOR_RGB = {
     2.0: (84, 138, 206),
     10.0: (18, 172, 198),
     20.0: (8, 142, 18),
-    25.0: (16, 164, 14),
-    32.0: (216, 196, 10),
-    40.0: (224, 138, 8),
-    48.0: (204, 84, 10),
-    56.0: (148, 8, 16),
+    22.5: (12, 153, 16),
+    24.8: (14, 160, 14),
+    27.0: (44, 176, 12),
+    30.0: (120, 188, 12),
+    31.7: (200, 200, 12),
+    39.7: (224, 140, 8),
+    45.0: (210, 88, 10),
+    48.3: (200, 66, 10),
+    50.0: (196, 28, 14),
+    56.4: (148, 8, 18),
+    62.0: (170, 4, 120),
     65.0: (255, 0, 255),
 }
 
@@ -143,7 +149,10 @@ def test_rala_piecewise_anchors_match_stops():
     from mpwg_radar.palette import RALA_PALETTE_VERSION, derive_rala_stops
 
     pal = load_palette("mpwg-rala-2026-09")
-    assert pal.version == RALA_PALETTE_VERSION == "2026-09-rala-p3j"
+    assert pal.version == RALA_PALETTE_VERSION == "2026-09-rala-p3k"
+    from mpwg_radar.tiles import SPATIAL_REVISION
+
+    assert SPATIAL_REVISION == "p3i"
     assert pal.min_dbz == -32.0
     derived = derive_rala_stops()
     assert [stop.dbz for stop in pal.stops] == [stop.dbz for stop in derived]
@@ -428,8 +437,8 @@ _P3H_MAGENTA = {
 }
 
 
-def test_rala_p3j_keeps_weak_band_and_calms_mid_high():
-    """Stops through 20 dBZ stay p3h. 25–62.5 leave the neon corners. Magenta stays."""
+def test_rala_p3k_keeps_weak_band_and_stays_off_laser():
+    """Stops through 20 dBZ stay p3h/p3j. Mid/high stays off neon corners. Magenta stays."""
     pal = load_palette("mpwg-rala-2026-09")
     for dbz, rgba in _P3H_THROUGH_20.items():
         assert _rgba(pal, dbz) == rgba, dbz
@@ -504,6 +513,54 @@ def test_rala_p3j_keeps_weak_band_and_calms_mid_high():
     for lo, hi in ((0.1, 10.0), (10.0, 20.0), (20.0, 30.0), (30.0, 40.0), (40.0, 50.0), (50.0, 60.0), (60.0, 65.0)):
         dist = float(np.linalg.norm(np.array(_rgba(pal, lo)[:3]) - np.array(_rgba(pal, hi)[:3])))
         assert dist >= 15.0, (lo, hi, dist)
+
+
+def _mean_rgb_per_tenth(pal, lo: float, hi: float) -> float:
+    steps = []
+    prev = np.array(_rgba(pal, lo)[:3], dtype=np.float64)
+    dbz = lo
+    while dbz < hi - 1e-9:
+        nxt_dbz = round(dbz + 0.1, 10)
+        nxt = np.array(_rgba(pal, nxt_dbz)[:3], dtype=np.float64)
+        steps.append(float(np.linalg.norm(nxt - prev)))
+        prev = nxt
+        dbz = nxt_dbz
+    return float(np.mean(steps))
+
+
+def test_rala_p3k_densifies_mid_high_and_locks_p3j_endpoints():
+    """−32..20 and 65+ match p3j. 30→32 is no longer the cliff; 32–48 is steeper."""
+    pal = load_palette("mpwg-rala-2026-09")
+    assert "RadarScope" in pal.description
+    assert "stays p3i" in pal.description
+    assert "PENDING" in pal.description
+    # These knots are every p3j stop through 20, so the 0.1 LUT below 20 is fixed.
+    for dbz, rgba in _P3H_THROUGH_20.items():
+        assert _rgba(pal, dbz) == rgba, dbz
+    for dbz, rgba in _P3H_MAGENTA.items():
+        assert _rgba(pal, dbz) == rgba, dbz
+    # 22.5 is the pinned p3j green, so 20→22.5 does not repaint the handoff.
+    assert _rgba(pal, 22.5) == (12, 153, 16, 255)
+    assert _rgba(pal, 21.0) == (10, 146, 17, 255)
+    # Off-stop samples inside the locked magenta ramp.
+    assert _rgba(pal, 66.1) == (255, 3, 255, 255)
+    assert _rgba(pal, 71.3) == (255, 75, 255, 255)
+    assert _rgba(pal, 73.8) == (255, 197, 255, 255)
+    # p3j measured on this same colorize path: 30–32 mean 7.709 / 0.1 dBZ
+    # (2 dBZ step ~154) and 32–48 mean 0.815 / 0.1 dBZ.
+    cliff = _mean_rgb_per_tenth(pal, 30.0, 32.0)
+    plateau = _mean_rgb_per_tenth(pal, 32.0, 48.0)
+    assert cliff <= 5.2, cliff
+    assert plateau >= 0.95, plateau
+    assert _rgb_dist(_rgba(pal, 30.0), _rgba(pal, 32.0)) < 100
+    # Upper 40s stay orange. Red onset is 50, still short of pure 255 red.
+    r48, g48, b48, _ = _rgba(pal, 48.0)
+    assert r48 > 180 and g48 > 60 and g48 < 110 and b48 < 30 and r48 > g48
+    r50, g50, b50, _ = _rgba(pal, 50.0)
+    assert 170 < r50 < 230 and g50 < 40 and b50 < 30
+    assert _rgba(pal, 48.3)[1] >= 60
+    # A 2 dBZ step inside the old yellow/orange plateau moves more than p3j's ~14–15.
+    assert _rgb_dist(_rgba(pal, 42.0), _rgba(pal, 44.0)) >= 18
 
 
 def test_rala_colorbar_is_the_production_lut():

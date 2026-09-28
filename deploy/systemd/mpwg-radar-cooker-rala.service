@@ -22,6 +22,11 @@ EnvironmentFile=-/etc/mpwg-radar.env
 # MPWG_RALA_UPLOAD_CONCURRENCY is set; pin 8 here anyway.
 Environment=MPWG_PRODUCT=rala
 Environment=MPWG_RALA_UPLOAD_CONCURRENCY=8
+# Native z9 for close zooms. Environment= after EnvironmentFile wins, so
+# MPWG_MAX_ZOOM=8 in the shared env file cannot leave RALA on stretched z8.
+# Composite keeps MPWG_MAX_ZOOM (default 8). Empty-tile skip is what makes
+# z9 fit a quiet frame; a nationwide precip day can slip the 2-minute cadence.
+Environment=MPWG_RALA_MAX_ZOOM=9
 # Two tile threads match this host's 2 vCPUs. A shared MPWG_TILE_WORKERS=1
 # in the env file must not serialize the masked-splat pass.
 Environment=MPWG_TILE_WORKERS=2

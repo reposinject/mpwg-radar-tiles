@@ -63,7 +63,7 @@ else
   echo "==> Keeping existing $ENV_FILE"
   if grep -qE '^[[:space:]]*MPWG_REGION=central-texas' "$ENV_FILE"; then
     echo "==> NOTE: $ENV_FILE still has MPWG_REGION=central-texas."
-    echo "    For CONUS tiles set MPWG_REGION=conus, MPWG_MIN_ZOOM=6, MPWG_MAX_ZOOM=8"
+    echo "    For CONUS tiles set MPWG_REGION=conus, MPWG_MIN_ZOOM=6, MPWG_MAX_ZOOM=8 (composite). RALA is z6-9 via the RALA unit (MPWG_RALA_MAX_ZOOM=9)."
     echo "    then: systemctl daemon-reload && systemctl restart mpwg-radar-cooker.timer"
     echo "          && systemctl start mpwg-radar-cooker.service"
   fi

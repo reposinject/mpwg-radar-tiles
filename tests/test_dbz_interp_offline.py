@@ -17,6 +17,8 @@ from mpwg_radar.dbz_interp_offline import (
     CANDIDATE_BICUBIC,
     CANDIDATE_BILINEAR,
     CANDIDATE_IDS,
+    CANDIDATE_BOUNDED_CUBIC,
+    CANDIDATE_MONOTONE,
     CANDIDATE_PEAK_HOLD,
     CANDIDATE_TIGHT,
     PRODUCTION_NAME,
@@ -386,6 +388,41 @@ def test_flag_tight_matches_candidate_and_leaves_clear_air(monkeypatch):
     monkeypatch.setenv("MPWG_PRODUCT", "rala")
     monkeypatch.setenv("MPWG_RALA_DBZ_INTERP", "tight_peak_hold")
     assert load_config().rala_dbz_interp == "tight_peak_hold"
+
+
+def test_bounded_cubic_and_monotone_hit_centers_without_a_flat_stamp():
+    """C and D are harness samplers. Centers match. They do not hold a p3l core."""
+    lat, lon, dbz, cat = _peak_grid()
+    q_center = _at(lat, lon, 10, 10, 0.0, 0.0)
+    q_off = _at(lat, lon, 10, 10, 0.0, 0.14)
+    q_clear = _at(lat, lon, 0, 10, 0.0, 0.0)
+    q_miss = _at(lat, lon, 5, 2, 0.0, 0.0)
+    held, _ = sample_dbz_candidate(CANDIDATE_PEAK_HOLD, dbz, lat, lon, *q_off, cat)
+    assert abs(float(held[0, 0]) - 68.0) < 1e-3
+    for name in (CANDIDATE_BOUNDED_CUBIC, CANDIDATE_MONOTONE):
+        center, center_cat = sample_dbz_candidate(name, dbz, lat, lon, *q_center, cat)
+        assert center_cat[0, 0] == CAT_VALID
+        assert abs(float(center[0, 0]) - 68.0) < 1e-3
+        off, _ = sample_dbz_candidate(name, dbz, lat, lon, *q_off, cat)
+        # Inside the p3l core, A is still the source. C and D have already left it.
+        assert float(off[0, 0]) < 67.5
+        assert float(off[0, 0]) > 60.0
+        clear, clear_cat = sample_dbz_candidate(name, dbz, lat, lon, *q_clear, cat)
+        assert clear_cat[0, 0] == CAT_NO_ECHO
+        assert np.isnan(clear[0, 0])
+        missing, miss_cat = sample_dbz_candidate(name, dbz, lat, lon, *q_miss, cat)
+        assert miss_cat[0, 0] == CAT_MISSING
+        assert np.isnan(missing[0, 0])
+        qlat, qlon = _line_between(lat, lon, 10, 10, 10, 11)
+        line, line_cat = sample_dbz_candidate(name, dbz, lat, lon, qlat, qlon, cat)
+        assert np.all(line_cat == CAT_VALID)
+        assert float(np.nanmin(line)) >= 30.0 - 1e-2
+        assert float(np.nanmax(line)) <= 68.0 + 1e-2
+    dbz65 = np.array(dbz, copy=True)
+    dbz65[10, 10] = 65.0
+    for name in (CANDIDATE_BOUNDED_CUBIC, CANDIDATE_MONOTONE):
+        center, _ = sample_dbz_candidate(name, dbz65, lat, lon, *q_center, cat)
+        assert abs(float(center[0, 0]) - 65.0) < 1e-3
 
 
 def test_rala_dbz_interp_env_defaults_off(monkeypatch):

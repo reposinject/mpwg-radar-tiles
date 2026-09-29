@@ -90,11 +90,18 @@ CANDIDATE_BILINEAR = "bilinear-masked"
 CANDIDATE_BICUBIC = "bicubic-clipped"
 CANDIDATE_PEAK_HOLD = "bilinear-peak-hold"
 CANDIDATE_TIGHT = "tight-peak-hold"
+# Final-harness only. Not cooker flags. C keeps a cubic when it stays inside
+# the 2×2 cell centers and otherwise uses bilinear, so a clip cannot stamp a
+# flat shelf. D is successive monotone cubic Hermite (Fritsch–Carlson slopes).
+CANDIDATE_BOUNDED_CUBIC = "bounded-cubic"
+CANDIDATE_MONOTONE = "monotone-pchip"
 CANDIDATE_IDS = (
     CANDIDATE_BILINEAR,
     CANDIDATE_BICUBIC,
     CANDIDATE_PEAK_HOLD,
     CANDIDATE_TIGHT,
+    CANDIDATE_BOUNDED_CUBIC,
+    CANDIDATE_MONOTONE,
 )
 # Power on the bilinear fraction for B. k=1 is plain bilinear (10–90% width
 # 0.80 cell). k=2 is 0.50 cell. k=3 is 0.35 cell and the near-flat shelf on
@@ -224,6 +231,231 @@ def sample_bicubic_clipped(
         clipped = np.clip(acc, c_min, c_max).astype(np.float32)
         out_dbz = np.array(out_dbz, dtype=np.float32, copy=True)
         out_dbz[use] = clipped[use]
+    return out_dbz, out_cat
+
+
+def _gather4(src, cat, j0, i0):
+    """4×4 taps at (j0-1..j0+2, i0-1..i0+2) plus a validity mask.
+
+    NO-ECHO and missing are not numeric taps. Out-of-grid taps are invalid.
+    """
+    shape = np.asarray(j0).shape
+    vals = np.zeros((4, 4) + shape, dtype=np.float64)
+    good = np.zeros((4, 4) + shape, dtype=bool)
+    ny, nx = src.shape
+    for aj, dj in enumerate((-1, 0, 1, 2)):
+        for ai, di in enumerate((-1, 0, 1, 2)):
+            jj = j0 + np.int32(dj)
+            ii = i0 + np.int32(di)
+            inside = (jj >= 0) & (jj < ny) & (ii >= 0) & (ii < nx)
+            jc = np.clip(jj, 0, ny - 1)
+            ic = np.clip(ii, 0, nx - 1)
+            sample = src[jc, ic]
+            ok = inside & (cat[jc, ic] == CAT_VALID) & np.isfinite(sample)
+            vals[aj, ai] = np.where(ok, sample.astype(np.float64), 0.0)
+            good[aj, ai] = ok
+    return vals, good
+
+
+def _hermite(y0, y1, m0, m1, t):
+    """Cubic Hermite on t in [0, 1]. Slopes are dy/dt over that one cell."""
+    t = np.asarray(t, dtype=np.float64)
+    t2 = t * t
+    t3 = t2 * t
+    h00 = 2.0 * t3 - 3.0 * t2 + 1.0
+    h10 = t3 - 2.0 * t2 + t
+    h01 = -2.0 * t3 + 3.0 * t2
+    h11 = t3 - t2
+    return h00 * y0 + h10 * m0 + h01 * y1 + h11 * m1
+
+
+def _fc_limit(m0, m1, secant, ok):
+    """Fritsch–Carlson slope cap. The segment then stays between its endpoints."""
+    m0 = np.array(m0, dtype=np.float64, copy=True)
+    m1 = np.array(m1, dtype=np.float64, copy=True)
+    d = np.asarray(secant, dtype=np.float64)
+    flat = ok & (np.abs(d) < 1e-8)
+    live = ok & ~flat
+    m0 = np.where(flat, 0.0, m0)
+    m1 = np.where(flat, 0.0, m1)
+    alpha = np.divide(m0, d, out=np.zeros(d.shape, dtype=np.float64), where=live)
+    beta = np.divide(m1, d, out=np.zeros(d.shape, dtype=np.float64), where=live)
+    alpha = np.maximum(alpha, 0.0)
+    beta = np.maximum(beta, 0.0)
+    norm = alpha * alpha + beta * beta
+    scale = np.ones(d.shape, dtype=np.float64)
+    hot = live & (norm > 9.0)
+    scale = np.where(hot, 3.0 / np.sqrt(np.maximum(norm, 1e-30)), 1.0)
+    m0 = np.where(live, alpha * scale * d, np.where(flat, 0.0, m0))
+    m1 = np.where(live, beta * scale * d, np.where(flat, 0.0, m1))
+    m0 = np.where(ok, m0, 0.0)
+    m1 = np.where(ok, m1, 0.0)
+    return m0, m1
+
+
+def _node_slope(d_left, d_right, left_ok, right_ok):
+    """Harmonic-mean slope, zero at a sign change or a flat neighbor."""
+    both = left_ok & right_ok & (d_left * d_right > 0.0)
+    denom = d_left + d_right
+    harm = np.divide(
+        2.0 * d_left * d_right,
+        denom,
+        out=np.zeros(np.broadcast(d_left, d_right).shape, dtype=np.float64),
+        where=both & (np.abs(denom) > 1e-12),
+    )
+    only_l = left_ok & ~right_ok
+    only_r = right_ok & ~left_ok
+    slope = np.where(only_l, d_left, 0.0)
+    slope = np.where(only_r, d_right, slope)
+    slope = np.where(both, harm, slope)
+    return slope.astype(np.float64)
+
+
+def _pchip1(ym1, y0, y1, y2, gm1, g0, g1, g2, t):
+    """1D monotone cubic on the segment from y0 to y1. Invalid ends → NaN."""
+    ok = g0 & g1
+    d_left = y0 - ym1
+    d_mid = y1 - y0
+    d_right = y2 - y1
+    left_ok = gm1 & g0
+    mid_ok = g0 & g1
+    right_ok = g1 & g2
+    m0 = _node_slope(d_left, d_mid, left_ok, mid_ok)
+    m1 = _node_slope(d_mid, d_right, mid_ok, right_ok)
+    m0, m1 = _fc_limit(m0, m1, d_mid, mid_ok)
+    value = _hermite(y0, y1, m0, m1, t)
+    return np.where(ok, value, np.nan)
+
+
+def sample_bounded_cubic(
+    dbz: np.ndarray,
+    lat: np.ndarray,
+    lon: np.ndarray,
+    qlat: np.ndarray,
+    qlon: np.ndarray,
+    category: Optional[np.ndarray] = None,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Candidate C. Catmull-Rom where it stays inside the 2×2, else bilinear.
+
+    A hard clip would flatten every overshoot onto the local max and stamp a
+    plateau. This keeps the cubic only when it is already inside the min/max
+    of the four surrounding valid cell centers, and leaves the masked bilinear
+    sample in place otherwise. NO-ECHO is never a tap. Cell centers match the
+    source because both kernels are interpolating. No value is written outside
+    the local source range.
+    """
+    src = np.asarray(dbz)
+    out_dbz, out_cat, _edge = sample_masked_bilinear(
+        src, lat, lon, qlat, qlon, category
+    )
+    frac = _grid_fractional(lat, lon, qlat, qlon)
+    if frac is None or src.size == 0 or not np.any(out_cat == CAT_VALID):
+        return out_dbz, out_cat
+    if category is None:
+        cat = np.where(np.isfinite(src), CAT_VALID, CAT_NO_ECHO).astype(np.uint8)
+    else:
+        cat = np.asarray(category)
+    j_f, i_f = frac
+    j0 = np.floor(j_f).astype(np.int32)
+    i0 = np.floor(i_f).astype(np.int32)
+    wy = _cubic_weights(j_f - j0)
+    wx = _cubic_weights(i_f - i0)
+    ny, nx = src.shape
+    acc = np.zeros(np.asarray(qlat).shape, dtype=np.float64)
+    all_good = np.ones(np.asarray(qlat).shape, dtype=bool)
+    c_min = np.full(np.asarray(qlat).shape, np.inf, dtype=np.float64)
+    c_max = np.full(np.asarray(qlat).shape, -np.inf, dtype=np.float64)
+    for aj, wj in enumerate(wy):
+        dj = aj - 1
+        for ai, wi in enumerate(wx):
+            di = ai - 1
+            jj = j0 + np.int32(dj)
+            ii = i0 + np.int32(di)
+            inside = (jj >= 0) & (jj < ny) & (ii >= 0) & (ii < nx)
+            jc = np.clip(jj, 0, ny - 1)
+            ic = np.clip(ii, 0, nx - 1)
+            vals = src[jc, ic]
+            good = inside & (cat[jc, ic] == CAT_VALID) & np.isfinite(vals)
+            all_good &= good
+            acc = acc + np.where(good, vals.astype(np.float64) * (wj * wi), 0.0)
+            if dj in (0, 1) and di in (0, 1):
+                finite_vals = vals.astype(np.float64)
+                c_min = np.where(good, np.minimum(c_min, finite_vals), c_min)
+                c_max = np.where(good, np.maximum(c_max, finite_vals), c_max)
+    inside_hull = all_good & (acc >= c_min - 1e-4) & (acc <= c_max + 1e-4)
+    use = inside_hull & (out_cat == CAT_VALID) & np.isfinite(out_dbz)
+    if np.any(use):
+        out_dbz = np.array(out_dbz, dtype=np.float32, copy=True)
+        out_dbz[use] = acc[use].astype(np.float32)
+    return out_dbz, out_cat
+
+
+def sample_monotone_pchip(
+    dbz: np.ndarray,
+    lat: np.ndarray,
+    lon: np.ndarray,
+    qlat: np.ndarray,
+    qlon: np.ndarray,
+    category: Optional[np.ndarray] = None,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Candidate D. Successive monotone cubic Hermite on valid echo only.
+
+    Slopes are Fritsch–Carlson: zero at a local extremum, harmonic mean on a
+    monotone run, then capped so each 1D segment stays between its endpoints.
+    Longitude is interpolated first on the four bracketing rows, then latitude
+    through those four results. A local maximum is reached at its own cell
+    center and the tangent there is flat, but the value is not held across a
+    core. Where an endpoint is NO-ECHO or missing the sample falls back to
+    masked bilinear. Category stays the nearest cell.
+    """
+    src = np.asarray(dbz)
+    out_dbz, out_cat, _edge = sample_masked_bilinear(
+        src, lat, lon, qlat, qlon, category
+    )
+    frac = _grid_fractional(lat, lon, qlat, qlon)
+    if frac is None or src.size == 0 or not np.any(out_cat == CAT_VALID):
+        return out_dbz, out_cat
+    if category is None:
+        cat = np.where(np.isfinite(src), CAT_VALID, CAT_NO_ECHO).astype(np.uint8)
+    else:
+        cat = np.asarray(category)
+    j_f, i_f = frac
+    j0 = np.floor(j_f).astype(np.int32)
+    i0 = np.floor(i_f).astype(np.int32)
+    tj = (j_f - j0).astype(np.float64)
+    ti = (i_f - i0).astype(np.float64)
+    vals, good = _gather4(src, cat, j0, i0)
+    row_v = []
+    row_g = []
+    for aj in range(4):
+        v = _pchip1(
+            vals[aj, 0],
+            vals[aj, 1],
+            vals[aj, 2],
+            vals[aj, 3],
+            good[aj, 0],
+            good[aj, 1],
+            good[aj, 2],
+            good[aj, 3],
+            ti,
+        )
+        row_v.append(v)
+        row_g.append(np.isfinite(v))
+    mono = _pchip1(
+        row_v[0],
+        row_v[1],
+        row_v[2],
+        row_v[3],
+        row_g[0],
+        row_g[1],
+        row_g[2],
+        row_g[3],
+        tj,
+    )
+    use = (out_cat == CAT_VALID) & np.isfinite(mono)
+    if np.any(use):
+        out_dbz = np.array(out_dbz, dtype=np.float32, copy=True)
+        out_dbz[use] = mono[use].astype(np.float32)
     return out_dbz, out_cat
 
 
@@ -463,6 +695,10 @@ def sample_dbz_candidate(
             hold_min_dbz=hold_min_dbz,
             peak_mask=peak_mask,
         )
+    if name == CANDIDATE_BOUNDED_CUBIC:
+        return sample_bounded_cubic(dbz, lat, lon, qlat, qlon, category)
+    if name == CANDIDATE_MONOTONE:
+        return sample_monotone_pchip(dbz, lat, lon, qlat, qlon, category)
     raise ValueError(
         f"Unknown dBZ interp candidate {name!r}. Choose from {CANDIDATE_IDS}."
     )

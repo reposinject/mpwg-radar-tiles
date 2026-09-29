@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-29  
 **Frame:** `20260929T004243Z` (the Dickinson shot, MRMS `ReflectivityAtLowestAltitude`)  
-**Status:** draft. Direction **keep**, acceptance **not yet**. Default flag **off** = production p3l. Stamps stay **spatial p3l** and **palette `2026-09-rala-p3k`**. Do not merge. Do not deploy. Do not set a review value on the production cooker.
+**Status:** draft. James Final RALA Renderer Push is measured offline. **James picks.** Nothing here is deployed. Default flag **off** = production p3l. Stamps stay **spatial p3l** and **palette `2026-09-rala-p3k`**. Do not merge. Do not deploy. Do not set a review value on the production cooker. C and D are harness-only.
 
 Crops and `metrics.json` live in this directory. Reproduce with:
 
@@ -14,11 +14,141 @@ PYTHONPATH=src python3 scripts/p3n_dbz_interp_ab.py \
 
 Source object: `s3://noaa-mrms-pds/CONUS/ReflectivityAtLowestAltitude_00.50/20260929/MRMS_ReflectivityAtLowestAltitude_00.50_20260929-004243.grib2.gz`
 
+## James Final RALA Renderer Push — 2026-09-29
+
+**NOT PRODUCTION.** This section supersedes seam-only width tuning. Target: smooth without softness. Blocky means internal structure (large flat regions). Exterior grid character is acceptable. Colored squares are not RGB-blurred. Order: native dBZ → constrained numerical reconstruction → dense sampling (≥8× per axis; 16× on one small crop) → p3k → RGBA. Sample centers stay exact. A peak rises to its genuine high. There is no flat ≥65 plateau stamp and no overshoot. Magenta / p3k / loop / native max zoom 9 / float64 axes stay locked. NO-ECHO is never a numeric sample. No sharpen, no fake contours, no z10 meteorological invent, no Phase 4, no production deploy.
+
+Package: `docs/p3n-dbz-interp/judge/final-harness/` (`metrics.json`, contact sheets, per-method fields). Same frame and the same crop windows as the earlier judge set.
+
+| Crop | Window | Samples / cell | Image |
+| --- | --- | --- | --- |
+| Dickinson tight | −103.15, 46.70, −102.40, 47.25 | 8 | 440×600 |
+| Belle Fourche tight | −103.98, 44.50, −103.45, 44.80 | 8 | 240×424 |
+| Intense ≥65 core | −102.98, 46.86, −102.72, 47.06 | 8 | 160×208 |
+| Same core, 16× | same window | 16 | 320×416 |
+
+This CONUS frame’s regional maximum is 58.0 dBZ. The intense crop plants the Dickinson cell at 46.945°N, 102.855°W from 58.0 to 68.0 so a ≥65 core exists to measure. That 68 is not observed dBZ.
+
+Regenerate:
+
+```bash
+PYTHONPATH=src python3 scripts/p3n_final_harness.py \
+  --grib MRMS_ReflectivityAtLowestAltitude_00.50_20260929-004243.grib2.gz \
+  --out docs/p3n-dbz-interp/judge/final-harness
+```
+
+### Methods
+
+| Id | Name | In the cooker flag? |
+| --- | --- | --- |
+| RAW | nearest native cell | control only |
+| A | `bilinear_peak_hold` | yes, default off |
+| B | `tight_peak_hold` | yes, default off |
+| C | bounded cubic (`bounded-cubic`) | harness only |
+| D | monotone cubic Hermite (`monotone-pchip`) | harness only |
+
+**RAW.** Nearest native cell. Interiors are constant because the source cell is constant. This is the block control.
+
+**A.** Masked bilinear on ordinary cells. A local maximum, including a tied plateau, keeps the p3l seam, so the source dBZ is held out to 0.28 cell. A plain ramp’s 10–90% width is 0.80 cell. Centers match. NO-ECHO is not a numeric sample.
+
+**B.** The same peak-hold as A. The bilinear fraction is remapped with power 2, so a plain ramp’s 10–90% width is 0.50 cell. The sample stays a convex combination of the valid corners. Peaks are still the flat p3l core. Centers match.
+
+**C.** Catmull-Rom on the 4×4 valid taps, written only when that value is already inside the min/max of the surrounding 2×2 cell centers. Otherwise the masked bilinear sample is left in place, so a hard clip cannot stamp a shelf at the clip value. Cell centers match because both kernels are interpolating. NO-ECHO is not a tap. On a uniform staircase the cubic reproduces the straight line (10–90% width 0.80 cell). On a flat-to-flat 20|30 edge the width is 0.713 cell.
+
+**D.** Successive one-dimensional monotone cubic Hermite (Fritsch–Carlson). Longitude runs first on the four bracketing rows, then latitude through those four results. Slopes are the harmonic mean when adjacent secants share a sign, zero at a sign change or a flat neighbor, then limited so each segment stays between its endpoints. A local maximum is the source value at its own cell center, with a flat tangent there, and is not held across a 0.28-cell core. Where an endpoint is NO-ECHO or missing, the sample falls back to masked bilinear. On a uniform staircase the segment is the straight line (width 0.80 cell). On a flat-to-flat 20|30 edge the width is 0.608 cell.
+
+### Transition width (synthetic, 10–90% of the step, in cells)
+
+One cell per level, 20 then 30 then 40 then 50 then 60 then 70. Min and max of every reconstruction stay on the segment endpoints (overshoot 0).
+
+| Segment | RAW | A | B | C | D |
+| --- | --- | --- | --- | --- | --- |
+| 20→30 | 0.00 | 0.80 | 0.50 | 0.80 | 0.80 |
+| 30→40 | 0.00 | 0.80 | 0.50 | 0.80 | 0.80 |
+| 40→50 | 0.00 | 0.80 | 0.50 | 0.80 | 0.80 |
+| 50→60 | 0.00 | 0.80 | 0.50 | 0.80 | 0.80 |
+| 60→≥65 (the 70 cell) | 0.00 | 0.557 | 0.407 | 0.80 | 0.80 |
+
+A and B shorten only the last segment because 70 is a local maximum and the peak-hold fires. C and D keep the line, which is the shape of a real gradient.
+
+Flat-to-flat 20,20,30,30 is the hard block edge. The upper plateau cells are local maxima (ties count), so A and B apply the hold.
+
+| Edge | RAW | A | B | C | D |
+| --- | --- | --- | --- | --- | --- |
+| 20\|30 flat-to-flat | 0.00 | 0.557 | 0.407 | 0.713 | 0.608 |
+
+### Real-frame bounds, centers, ≥65, NO-ECHO, weak area
+
+Every method, every crop: center MAE 0.0 dBZ, center max abs error 0.0, overshoot high 0.0, overshoot low 0.0, NO-ECHO numeric leaks 0. Source and reconstructed min/max below are the dense field. The dense grid is offset by half a subcell, so it does not land on cell centers. C and D therefore report a dense maximum a few hundredths under the planted 68 while the center CSV at that cell is 68. A and B report dense max 68 because the hold is a plateau.
+
+| Crop | Source min/max | A recon min/max | B | C | D |
+| --- | --- | --- | --- | --- | --- |
+| Dickinson tight | 5.5 / 58.0 | 5.625 / 58.0 | 5.509 / 58.0 | 5.625 / 57.963 | 5.625 / 57.951 |
+| Belle Fourche tight | 4.0 / 58.0 | 4.295 / 58.0 | 4.020 / 58.0 | 4.295 / 57.962 | 4.064 / 57.934 |
+| Intense core, 8× | 7.0 / 68.0 | 7.062 / 68.0 | 7.004 / 68.0 | 7.062 / 67.960 | 7.005 / 67.755 |
+| Intense core, 16× | 7.0 / 68.0 | 7.031 / 68.0 | 7.001 / 68.0 | 7.031 / 67.996 | 7.001 / 67.937 |
+
+≥65 on the planted cell: source cells ≥65 = 1, and every method keeps that center ≥65. Dense area fraction ≥65 (source 0.0035): A and B 0.0020 at 8× (0.0019 at 16×); C 0.0012 (0.0011 at 16×); D 0.0010 (0.0011 at 16×). Dickinson and Belle have no observed ≥65 cell, so both fractions stay 0.
+
+Weak-return area is the fraction of dense samples ≤10 dBZ. Change is reconstructed minus source. Ramps pull some fringe samples above 10, so the fraction falls.
+
+| Crop | A | B | C | D |
+| --- | --- | --- | --- | --- |
+| Dickinson tight | −0.0185 | −0.0149 | −0.0178 | −0.0171 |
+| Belle Fourche tight | −0.0156 | −0.0119 | −0.0138 | −0.0131 |
+| Intense core, 8× | −0.0063 | −0.0042 | −0.0061 | −0.0053 |
+| Intense core, 16× | −0.0064 | −0.0038 | −0.0062 | −0.0054 |
+
+Inner-flat fraction: on steps of ≥8 dBZ, the share of offsets 0.05 / 0.10 / 0.15 / 0.20 cell that are still within 0.5 dBZ of the source cell. Higher means a larger flat interior. Peak-flat is the same statistic on local maxima ≥50 dBZ.
+
+| Crop | RAW | A | B | C | D | A/B/C/D peak ≥50 |
+| --- | --- | --- | --- | --- | --- | --- |
+| Dickinson (n=260) | 1.00 | 0.50 | 1.00 | 0.50 | 0.75 | 1.00 / 1.00 / 0.875 / 1.00 |
+| Belle Fourche (n=340) | 1.00 | 0.50 | 1.00 | 0.50 | 0.75 | 1.00 / 1.00 / 0.625 / 1.00 |
+| Intense 8× (n=110) | 1.00 | 0.50 | 1.00 | 0.50 | 0.625 | 1.00 / 1.00 / 0.75 / 0.75 |
+| Intense 16× (n=110) | 1.00 | 0.50 | 1.00 | 0.50 | 0.625 | 1.00 / 1.00 / 0.75 / 0.75 |
+
+B matches the native cell on that interior statistic. A and C leave the center on a plain ramp. D stays nearer the endpoint on a hard edge (flat tangent) and still follows the straight line on a real gradient.
+
+### What each crop contains
+
+Under `judge/final-harness/<site>/` for RAW, A, B, C, D:
+
+- `*_numerical_u16.png` — grayscale numerical field, linear map of −20..80 dBZ into uint16 (1..65535), missing = 0
+- `*_numerical_preview.png` — 8-bit preview of the same field, 0..70 dBZ, for viewing
+- `*_p3k.png` — that field through the p3k LUT only (no p3l edge inset, no RGB blur)
+- `*_centers.png` — native sample-center overlay
+- `*_centers.csv` — lat, lon, category, source dBZ, reconstructed dBZ, error
+- `*_error.png` — reconstructed minus nearest source, ±15 dBZ
+
+Contact sheets at the harness root, banner **NOT PRODUCTION**:
+
+- `dickinson_tight_p3k_compare.png`, `dickinson_tight_numerical_compare.png`
+- `belle_fourche_tight_p3k_compare.png`, `belle_fourche_tight_numerical_compare.png`
+- `intense65_core_p3k_compare.png`, `intense65_core_numerical_compare.png`
+- `intense65_core_16x_p3k_compare.png`, `intense65_core_16x_numerical_compare.png`
+
+### Render resolution and the Mapbox second filter
+
+The harness pictures are the dense reconstruction, 8 samples per native 0.01° cell (16 on the intense core). They are not Mapbox screenshots and they are not cooker tiles.
+
+The cooker still writes one 512×512 PNG per z9 XYZ tile. That PNG covers the same ground as a 256 CSS slippy tile. At Dickinson, map zoom 9 is about 3.65 CSS px per cell east–west. Mapbox linearly filters those 512px pixels when the map zooms past 9. That second filter widens whatever ramp is already in the tile. A narrower reconstruction on the tile still gets that display filter on top. These crops stop before that filter.
+
+### Recommendation for James
+
+**D (monotone cubic Hermite) is the engineering fit. James picks. Do not deploy. Do not merge. The flag stays off, and C and D stay out of `MPWG_RALA_DBZ_INTERP`.**
+
+D meets the constraints this push added. Centers are exact (MAE 0). Overshoot against the in-window source range is 0.0 dBZ on every crop. NO-ECHO never becomes a number. The planted ≥65 cell stays ≥65 at its center, and the value is that cell’s 68 only at the center: the dense field around it falls under 68 (67.76 at 8×, 67.94 at 16×) because the sample grid misses the center, which is the opposite of a flat 65 plateau. On a hard block edge the 10–90% width is 0.61 cell, tighter than C (0.71) and tighter than a bilinear ramp (0.80), while a real staircase stays the straight line at 0.80 cell, so a true gradient is not given extra blur. Weak-area change sits with A and C (Dickinson −0.017).
+
+C is the alternative if the D crops still read as interior facets. C has the same center error, the same zero overshoot, the same NO-ECHO behavior, and A’s interior-flat fraction (0.50). Its hard-edge ramp is 0.71 cell, which is the softness side of this target.
+
+A and B keep the p3l core on every local maximum, including tied plateaus. That is the flat stamp this push rules out. B’s inner-flat fraction is 1.00, the same as the native cell, so the interior blocks remain.
+
 ## James review — direction keep, acceptance not yet
 
 Medium zoom looks much better (the Lego is largely gone). Tight overzoom looks too soft. Generic sharpening and unsharp mask are rejected. Peak-hold stays. p3k stays frozen. The loop stays locked. Magenta stays ≥65. NO-ECHO stays hard. No z10. Do not revert the review path to p3l. Do not merge. Do not deploy. Production remains flag-off = p3l.
 
-Candidate A stays `bilinear_peak_hold`. Candidate B is `tight_peak_hold`: the same peak-hold, a shorter numerical ramp before `palette.colorize`. There is no Candidate C. A third width either sits on A or on the p3l shelf.
+Candidate A stays `bilinear_peak_hold`. Candidate B is `tight_peak_hold`: the same peak-hold, a shorter numerical ramp before `palette.colorize`. This A/B pass added no third width. The final harness above is the later measurement of C and D, and it is the one that applies to the smooth-without-softness target.
 
 ### Transition width on this frame
 
@@ -116,7 +246,7 @@ PYTHONPATH=src python3 scripts/p3n_dbz_interp_ab.py \
 
 ## Recommendation
 
-Candidate A is **`MPWG_RALA_DBZ_INTERP=bilinear_peak_hold`**. Candidate B is **`tight_peak_hold`**. Default **off**. Leave both off until James signs a tight-zoom crop. `SPATIAL_REVISION` stays `p3l` even when a flag is on.
+The final-harness recommendation above is the current one: **D**, with **C** as the alternative if James reads D as still faceted. A and B stay available behind the default-off flag and are not the fit for this push. `SPATIAL_REVISION` stays `p3l`. Do not enable any review value on a cooker that publishes tiles.
 
 ## Review flag
 

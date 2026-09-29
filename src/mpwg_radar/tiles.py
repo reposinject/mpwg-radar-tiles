@@ -11,7 +11,7 @@ from typing import Dict, Iterable, List, Optional, Tuple
 import numpy as np
 from PIL import Image
 
-from mpwg_radar.config import RALA_DBZ_INTERP_REVIEW
+from mpwg_radar.config import RALA_DBZ_INTERP_PEAK_HOLD, RALA_DBZ_INTERP_REVIEW
 from mpwg_radar.geo import BBox, iter_tiles, tile_bounds
 from mpwg_radar.grib import ReflectivityFrame
 from mpwg_radar.palette import Palette
@@ -494,8 +494,9 @@ def render_tile(
 
     ``dbz_interp`` defaults to off. ``bilinear_peak_hold`` and
     ``tight_peak_hold`` replace the splat dBZ before the p3k LUT and keep the
-    p3l seam on local maxima. Category and clear-air alpha stay on the splat.
-    Omitting the argument, or passing ``""``, is the production splat.
+    p3l seam on local maxima. ``monotone_pchip`` is the harness monotone
+    cubic and does not hold a peak core. Category and clear-air alpha stay
+    on the splat. Omitting the argument, or passing ``""``, is the production splat.
     """
     qlon, qlat = _query_lonlat(z, x, y, tile_size)
     if sample_mode in (SAMPLE_MASKED_BILINEAR, SAMPLE_MASKED_SPLAT):
@@ -612,21 +613,22 @@ def write_tiles(
     GIL inside the splat, so two workers fit a 2 vCPU host. The frame grid
     is read-only and is not copied per worker.
 
-    ``dbz_interp=""`` is production. ``bilinear_peak_hold`` and
-    ``tight_peak_hold`` are review samplers and apply only to ``masked-splat``
-    (RALA).
+    ``dbz_interp=""`` is production. ``bilinear_peak_hold``,
+    ``tight_peak_hold``, and ``monotone_pchip`` are review samplers and apply
+    only to ``masked-splat`` (RALA). The peak mask is built for A and B only.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     peak_mask = None
     if dbz_interp in RALA_DBZ_INTERP_REVIEW and sample_mode == SAMPLE_MASKED_SPLAT:
-        from mpwg_radar.dbz_interp_offline import local_peak_mask
-
-        peak_mask = local_peak_mask(frame.dbz, frame.category)
         log.warning(
             "EXPERIMENTAL RALA dBZ interp %s is ON for this tile write. "
             "Spatial stamp stays p3l. Do not deploy these tiles to production.",
             dbz_interp,
         )
+    if dbz_interp in RALA_DBZ_INTERP_PEAK_HOLD and sample_mode == SAMPLE_MASKED_SPLAT:
+        from mpwg_radar.dbz_interp_offline import local_peak_mask
+
+        peak_mask = local_peak_mask(frame.dbz, frame.category)
     skipped = 0
     jobs: List[Tuple[int, int, int]] = []
     # An empty parent tile has no echo in any child. Mark it and skip the

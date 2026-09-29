@@ -75,6 +75,42 @@ def test_classify_skips_other_product_tree(tmp_path: Path):
     assert all(not rel.startswith("clean/") for rel in rala_rels if rel != "manifest.json")
 
 
+def test_d_review_prefix_does_not_upload_consumer_rala(tmp_path: Path):
+    radar = tmp_path / "radar"
+    _touch(radar / "manifest.json", b"{}")
+    _touch(radar / "rala" / "clean" / "20260915T163641Z" / "6" / "1" / "2.png")
+    _touch(radar / "rala" / "clean" / "latest" / "6" / "1" / "2.png")
+    _touch(radar / "rala" / "clean" / "latest" / "frame.json", b"{}")
+    review = "rala-review/monotone_pchip"
+    _touch(radar / review / "clean" / "20260915T163641Z" / "6" / "1" / "2.png")
+    _touch(radar / review / "clean" / "20260915T163641Z" / "frame.json", b"{}")
+    _touch(radar / review / "clean" / "latest" / "6" / "1" / "2.png")
+    _touch(radar / review / "clean" / "latest" / "frame.json", b"{}")
+    _touch(radar / review / "colorbar.png", b"\x89PNG")
+
+    production, _ = classify_radar_files(
+        radar, "20260915T163641Z", ["clean"], product_id="rala"
+    )
+    prod_rels = [rel for items in production.values() for _, rel in items]
+    assert "rala/clean/latest/6/1/2.png" in prod_rels
+    assert all(not rel.startswith("rala-review/") for rel in prod_rels)
+
+    review_groups, _ = classify_radar_files(
+        radar,
+        "20260915T163641Z",
+        ["clean"],
+        product_id="rala",
+        tile_prefix=review,
+    )
+    review_rels = [rel for items in review_groups.values() for _, rel in items]
+    assert f"{review}/clean/20260915T163641Z/6/1/2.png" in review_rels
+    assert f"{review}/clean/latest/6/1/2.png" in review_rels
+    assert f"{review}/clean/latest/frame.json" in review_rels
+    assert f"{review}/colorbar.png" in review_rels
+    assert "manifest.json" in review_rels
+    assert all(not rel.startswith("rala/") for rel in review_rels)
+
+
 class FakeClient:
     def __init__(self, put=None):
         self.puts = []

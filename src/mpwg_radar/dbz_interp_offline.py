@@ -1,9 +1,10 @@
 """Numerical dBZ interpolation candidates for RALA.
 
 The cooker calls into this module only when ``MPWG_RALA_DBZ_INTERP`` is
-``bilinear_peak_hold`` (A) or ``tight_peak_hold`` (B). The default is off,
-and that path is the p3l splat. This module does not change
-``SPATIAL_REVISION`` or the p3k palette.
+``bilinear_peak_hold`` (A), ``tight_peak_hold`` (B), or ``monotone_pchip``
+(D). D calls ``sample_monotone_pchip`` unchanged. The default is off, and
+that path is the p3l splat. This module does not change ``SPATIAL_REVISION``
+or the p3k palette.
 
 Production paint order (unchanged by this module):
 
@@ -90,9 +91,9 @@ CANDIDATE_BILINEAR = "bilinear-masked"
 CANDIDATE_BICUBIC = "bicubic-clipped"
 CANDIDATE_PEAK_HOLD = "bilinear-peak-hold"
 CANDIDATE_TIGHT = "tight-peak-hold"
-# Final-harness only. Not cooker flags. C keeps a cubic when it stays inside
-# the 2×2 cell centers and otherwise uses bilinear, so a clip cannot stamp a
-# flat shelf. D is successive monotone cubic Hermite (Fritsch–Carlson slopes).
+# C stays harness-only. D is the same successive monotone cubic Hermite
+# (Fritsch–Carlson slopes) the harness measured. The review flag
+# ``monotone_pchip`` calls ``sample_monotone_pchip`` and does not retune it.
 CANDIDATE_BOUNDED_CUBIC = "bounded-cubic"
 CANDIDATE_MONOTONE = "monotone-pchip"
 CANDIDATE_IDS = (
@@ -721,10 +722,13 @@ def sample_review_dbz(
         name = CANDIDATE_PEAK_HOLD
     elif key == "tight_peak_hold":
         name = CANDIDATE_TIGHT
+    elif key == "monotone_pchip":
+        # Same function the final harness calls. No peak-hold, no width knob.
+        name = CANDIDATE_MONOTONE
     else:
         raise ValueError(
             f"Unknown review sampler {flag!r}. "
-            "Use bilinear_peak_hold or tight_peak_hold."
+            "Use bilinear_peak_hold, tight_peak_hold, or monotone_pchip."
         )
     return sample_dbz_candidate(
         name,

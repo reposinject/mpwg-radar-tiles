@@ -1,6 +1,6 @@
 # Final reconstruction harness — NOT PRODUCTION
 
-Offline comparison for the 2026-09-29 James Final RALA Renderer Push. Do not merge. Do not deploy. `MPWG_RALA_DBZ_INTERP` stays default off. Candidates C and D are harness-only.
+Offline comparison for the 2026-09-29 James Final RALA Renderer Push. Do not merge. Do not deploy to the production cooker. `MPWG_RALA_DBZ_INTERP` stays default off. C stays harness-only. D is the review flag `monotone_pchip` and uses this same monotone cubic sampler with no retune. See `docs/p3n-dbz-interp/D_REVIEW_COOK.md`.
 
 Frame `20260929T004243Z`. Same crop windows as the earlier judge set.
 

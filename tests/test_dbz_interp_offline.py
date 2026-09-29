@@ -9,6 +9,7 @@ import numpy as np
 
 from mpwg_radar.config import (
     RALA_DBZ_INTERP_BILINEAR_PEAK_HOLD,
+    RALA_DBZ_INTERP_MONOTONE_PCHIP,
     RALA_DBZ_INTERP_TIGHT_PEAK_HOLD,
     load_config,
     normalize_rala_dbz_interp,
@@ -29,6 +30,8 @@ from mpwg_radar.dbz_interp_offline import (
     sample_bilinear_peak_hold,
     sample_dbz_candidate,
     sample_localized_bilinear,
+    sample_monotone_pchip,
+    sample_review_dbz,
     width_10_90,
 )
 from mpwg_radar.geo import latlon_to_global_xy
@@ -82,6 +85,8 @@ def test_production_stamps_stay_p3l_and_the_flag_defaults_off():
     assert normalize_rala_dbz_interp("bilinear-peak-hold") == RALA_DBZ_INTERP_BILINEAR_PEAK_HOLD
     assert normalize_rala_dbz_interp("tight_peak_hold") == RALA_DBZ_INTERP_TIGHT_PEAK_HOLD
     assert normalize_rala_dbz_interp("tight-peak-hold") == RALA_DBZ_INTERP_TIGHT_PEAK_HOLD
+    assert normalize_rala_dbz_interp("monotone_pchip") == RALA_DBZ_INTERP_MONOTONE_PCHIP
+    assert normalize_rala_dbz_interp("monotone-pchip") == RALA_DBZ_INTERP_MONOTONE_PCHIP
     assert TIGHT_BIAS_POWER == 2.0
     import inspect
 
@@ -486,3 +491,111 @@ def test_review_cook_keeps_p3l_stamp_and_marks_the_flag(tmp_path: Path):
     assert frame["mode_spec"]["dbz_interp"] == "bilinear_peak_hold"
     assert frame["palette"]["version"] == "2026-09-rala-p3k"
     assert frame["max_zoom"] == 6
+
+
+def test_monotone_pchip_review_flag_uses_the_harness_sampler(monkeypatch):
+    """D on the cooker flag is sample_monotone_pchip, with no peak-hold core."""
+    lat, lon, dbz, cat = _peak_grid()
+    q_center = _at(lat, lon, 10, 10, 0.0, 0.0)
+    q_off = _at(lat, lon, 10, 10, 0.0, 0.14)
+    q_clear = _at(lat, lon, 0, 10, 0.0, 0.0)
+    calls = {"n": 0}
+    real = sample_monotone_pchip
+
+    def _wrapped(*args, **kwargs):
+        calls["n"] += 1
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "mpwg_radar.dbz_interp_offline.sample_monotone_pchip", _wrapped
+    )
+    flagged, flagged_cat = sample_review_dbz(
+        "monotone_pchip", dbz, lat, lon, *q_center, cat
+    )
+    direct, direct_cat = real(dbz, lat, lon, *q_center, cat)
+    assert calls["n"] >= 1
+    assert np.allclose(flagged, direct, equal_nan=True)
+    assert np.array_equal(flagged_cat, direct_cat)
+    assert abs(float(flagged[0, 0]) - 68.0) < 1e-3
+    off, _ = sample_review_dbz("monotone-pchip", dbz, lat, lon, *q_off, cat)
+    assert float(off[0, 0]) < 67.5
+    held, _ = sample_dbz_candidate(CANDIDATE_PEAK_HOLD, dbz, lat, lon, *q_off, cat)
+    assert abs(float(held[0, 0]) - 68.0) < 1e-3
+    clear, clear_cat = sample_review_dbz(
+        RALA_DBZ_INTERP_MONOTONE_PCHIP, dbz, lat, lon, *q_clear, cat
+    )
+    assert clear_cat[0, 0] == CAT_NO_ECHO
+    assert np.isnan(clear[0, 0])
+    frame = _frame(dbz, lat, lon, cat)
+    pal = load_palette("mpwg-rala-2026-09")
+    gx, gy = latlon_to_global_xy(float(lon[10]), float(lat[10]), 9)
+    z, x, y = 9, int(gx), int(gy)
+    image, _echo = render_tile(
+        frame,
+        pal,
+        z,
+        x,
+        y,
+        sample_mode="masked-splat",
+        dbz_interp=RALA_DBZ_INTERP_MONOTONE_PCHIP,
+    )
+    production, _ = render_tile(frame, pal, z, x, y, sample_mode="masked-splat")
+    rgba = np.asarray(image)
+    prod = np.asarray(production)
+    assert np.all(rgba[prod[..., 3] == 0, 3] == 0)
+    assert calls["n"] >= 2
+
+
+def test_monotone_pchip_cook_lands_on_the_review_prefix(tmp_path: Path):
+    """D tiles are not written onto the consumer rala/clean/latest tree."""
+    from mpwg_radar.config import CookerConfig
+    from mpwg_radar.cooker import cook
+    from mpwg_radar.geo import CENTRAL_TEXAS
+
+    cfg = CookerConfig(
+        bbox=CENTRAL_TEXAS,
+        region_name="central-texas",
+        modes=["clean"],
+        min_zoom=6,
+        max_zoom=6,
+        tile_size=512,
+        skip_empty_tiles=True,
+        keep_dbz=False,
+        data_dir=tmp_path / "data",
+        output_dir=tmp_path,
+        upload=False,
+        product_id="rala",
+        rala_dbz_interp="monotone_pchip",
+    )
+    cook(cfg, source="synthetic", upload=False)
+    review = (
+        tmp_path
+        / "radar"
+        / "rala-review"
+        / "monotone_pchip"
+        / "clean"
+        / "latest"
+        / "frame.json"
+    )
+    frame = json.loads(review.read_text())
+    assert frame["mode_spec"]["spatial"] == "p3l"
+    assert frame["mode_spec"]["sample"] == "masked-splat"
+    assert frame["mode_spec"]["dbz_interp"] == "monotone_pchip"
+    assert frame["palette"]["version"] == "2026-09-rala-p3k"
+    assert frame["tile_url_template"] == (
+        "rala-review/monotone_pchip/clean/latest/{z}/{x}/{y}.png"
+    )
+    assert not (
+        tmp_path / "radar" / "rala" / "clean" / "latest" / "frame.json"
+    ).exists()
+    manifest = json.loads((tmp_path / "radar" / "manifest.json").read_text())
+    rala = manifest["products"]["rala"]
+    assert rala["latest"] == "rala/clean/latest/{z}/{x}/{y}.png"
+    assert rala["review"]["label"] == "NOT PRODUCTION"
+    assert rala["review"]["dbz_interp"] == "monotone_pchip"
+    assert rala["review"]["latest"] == (
+        "rala-review/monotone_pchip/clean/latest/{z}/{x}/{y}.png"
+    )
+    assert rala["review"]["consumer_latest"] == "rala/clean/latest/{z}/{x}/{y}.png"
+    assert not (tmp_path / "status-rala.json").exists()
+    assert (tmp_path / "status-rala-review-monotone_pchip.json").is_file()

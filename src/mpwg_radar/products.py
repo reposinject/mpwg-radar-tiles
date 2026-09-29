@@ -28,7 +28,7 @@ GRIB2 sometimes also uses -3 for no coverage (format-dependent; see flag table).
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Dict, Optional
 
 
@@ -187,6 +187,22 @@ PRODUCTS: Dict[str, ProductSpec] = {
 }
 
 COOKABLE_PRODUCT_IDS = tuple(PRODUCTS.keys())
+
+
+# Parallel CDN tree for the labeled D review cook. Consumer RALA stays on
+# ``rala/clean/latest``. A production cook's uploader matches the ``rala/``
+# prefix only, so objects under this root are not part of that upload.
+RALA_REVIEW_ROOT = "rala-review"
+
+
+def rala_review_tile_prefix(token: str) -> str:
+    """Tile prefix for one review token, e.g. ``rala-review/monotone_pchip``."""
+    return f"{RALA_REVIEW_ROOT}/{token}"
+
+
+def with_review_tile_prefix(product: ProductSpec, token: str) -> ProductSpec:
+    """Same product spec, publishing under the labeled review prefix."""
+    return replace(product, tile_prefix=rala_review_tile_prefix(token))
 
 
 def get_product(product_id: Optional[str]) -> ProductSpec:

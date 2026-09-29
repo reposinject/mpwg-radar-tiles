@@ -28,13 +28,23 @@ from mpwg_radar.products import (
 # replaces numerical dBZ before the p3k LUT and leaves category, the
 # clear-air alpha, the spatial stamp, and the palette alone.
 # A is the wider bilinear ramp. B is the tighter bounded ramp. Both keep
-# peak-hold on local maxima. Production stays off.
+# peak-hold on local maxima. D is the monotone cubic Hermite from the
+# offline harness, with no peak-hold and no width knob. Production stays off.
 RALA_DBZ_INTERP_BILINEAR_PEAK_HOLD = "bilinear_peak_hold"
 RALA_DBZ_INTERP_TIGHT_PEAK_HOLD = "tight_peak_hold"
+RALA_DBZ_INTERP_MONOTONE_PCHIP = "monotone_pchip"
+# A and B still build a peak mask. D must not: the harness sampler has no hold.
+RALA_DBZ_INTERP_PEAK_HOLD = frozenset(
+    {
+        RALA_DBZ_INTERP_BILINEAR_PEAK_HOLD,
+        RALA_DBZ_INTERP_TIGHT_PEAK_HOLD,
+    }
+)
 RALA_DBZ_INTERP_REVIEW = frozenset(
     {
         RALA_DBZ_INTERP_BILINEAR_PEAK_HOLD,
         RALA_DBZ_INTERP_TIGHT_PEAK_HOLD,
+        RALA_DBZ_INTERP_MONOTONE_PCHIP,
     }
 )
 _RALA_DBZ_INTERP_OFF = frozenset({"", "0", "off", "none", "false", "p3l"})
@@ -54,9 +64,10 @@ def normalize_rala_dbz_interp(raw: Optional[str]) -> str:
         return text
     raise ValueError(
         f"Unknown MPWG_RALA_DBZ_INTERP={raw!r}. Omit it for production p3l. "
-        f"Review cooks: {RALA_DBZ_INTERP_BILINEAR_PEAK_HOLD} (A) or "
-        f"{RALA_DBZ_INTERP_TIGHT_PEAK_HOLD} (B). "
-        "Do not set either on the production cooker."
+        f"Review cooks: {RALA_DBZ_INTERP_BILINEAR_PEAK_HOLD} (A), "
+        f"{RALA_DBZ_INTERP_TIGHT_PEAK_HOLD} (B), or "
+        f"{RALA_DBZ_INTERP_MONOTONE_PCHIP} (D). "
+        "Do not set any of these on the production cooker."
     )
 
 
@@ -167,9 +178,11 @@ class CookerConfig:
     r2: R2Config = field(default_factory=R2Config)
     palette_id: str = "mpwg-clean-2026-09"
     display_min_dbz: Optional[float] = None
-    # Empty: RALA tiles use the p3l splat. ``bilinear_peak_hold`` (A) and
-    # ``tight_peak_hold`` (B) are review samplers only. Neither changes
-    # SPATIAL_REVISION or the palette.
+    # Empty: RALA tiles use the p3l splat. ``bilinear_peak_hold`` (A),
+    # ``tight_peak_hold`` (B), and ``monotone_pchip`` (D) are review
+    # samplers only. None of them change SPATIAL_REVISION or the palette.
+    # D publishes under ``rala-review/monotone_pchip/`` so a review upload
+    # does not replace ``rala/clean/latest``.
     rala_dbz_interp: str = ""
     user_agent: str = "mpwg-radar-tiles/1.0 (+https://github.com/reposinject/mpwg-radar-tiles)"
 

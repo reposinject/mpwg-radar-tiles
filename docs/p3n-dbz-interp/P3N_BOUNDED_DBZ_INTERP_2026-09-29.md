@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-29  
 **Frame:** `20260929T004243Z` (the Dickinson shot, MRMS `ReflectivityAtLowestAltitude`)  
-**Status:** draft. James Final RALA Renderer Push is measured offline. **James picks.** Nothing here is deployed. Default flag **off** = production p3l. Stamps stay **spatial p3l** and **palette `2026-09-rala-p3k`**. Do not merge. Do not deploy. Do not set a review value on the production cooker. C and D are harness-only.
+**Status:** draft. James GO is **D review cook** (`monotone_pchip`). Default flag **off** = production p3l. Stamps stay **spatial p3l** and **palette `2026-09-rala-p3k`**. Do not merge. Do not set the flag on the production cooker service. C stays harness-only. D is the same harness sampler, on a labeled review prefix. Runbook: `docs/p3n-dbz-interp/D_REVIEW_COOK.md`.
 
 Crops and `metrics.json` live in this directory. Reproduce with:
 
@@ -13,6 +13,12 @@ PYTHONPATH=src python3 scripts/p3n_dbz_interp_ab.py \
 ```
 
 Source object: `s3://noaa-mrms-pds/CONUS/ReflectivityAtLowestAltitude_00.50/20260929/MRMS_ReflectivityAtLowestAltitude_00.50_20260929-004243.grib2.gz`
+
+## James GO — D review cook
+
+James: **D REVIEW COOK — GO.** The cooker flag `MPWG_RALA_DBZ_INTERP=monotone_pchip` calls `sample_monotone_pchip` (the final-harness D). The algorithm is not retuned. Production omit / off / p3l is unchanged. A and B tokens stay. C stays harness-only.
+
+D tiles are written under `rala-review/monotone_pchip/clean/`, not `rala/clean/latest`. The consumer CDN path stays `rala/clean/latest/{z}/{x}/{y}.png`. `frame.json` `mode_spec.dbz_interp` is `monotone_pchip` and `mode_spec.spatial` stays `p3l`. Cook, verify, and the Mapbox URL are in `D_REVIEW_COOK.md`. Do not put the variable in `/etc/mpwg-radar.env` or `mpwg-radar-cooker-rala.service`.
 
 ## James Final RALA Renderer Push — 2026-09-29
 
@@ -45,7 +51,7 @@ PYTHONPATH=src python3 scripts/p3n_final_harness.py \
 | A | `bilinear_peak_hold` | yes, default off |
 | B | `tight_peak_hold` | yes, default off |
 | C | bounded cubic (`bounded-cubic`) | harness only |
-| D | monotone cubic Hermite (`monotone-pchip`) | harness only |
+| D | monotone cubic Hermite (`monotone-pchip`) | review flag `monotone_pchip`, default off |
 
 **RAW.** Nearest native cell. Interiors are constant because the source cell is constant. This is the block control.
 
@@ -136,7 +142,7 @@ The cooker still writes one 512×512 PNG per z9 XYZ tile. That PNG covers the sa
 
 ### Recommendation for James
 
-**D (monotone cubic Hermite) is the engineering fit. James picks. Do not deploy. Do not merge. The flag stays off, and C and D stay out of `MPWG_RALA_DBZ_INTERP`.**
+**D (monotone cubic Hermite) is the engineering fit.** James signed a review cook of that sampler. The flag value is `monotone_pchip`, default off. C stays out of `MPWG_RALA_DBZ_INTERP`. Do not merge. Do not set D on the production service.
 
 D meets the constraints this push added. Centers are exact (MAE 0). Overshoot against the in-window source range is 0.0 dBZ on every crop. NO-ECHO never becomes a number. The planted ≥65 cell stays ≥65 at its center, and the value is that cell’s 68 only at the center: the dense field around it falls under 68 (67.76 at 8×, 67.94 at 16×) because the sample grid misses the center, which is the opposite of a flat 65 plateau. On a hard block edge the 10–90% width is 0.61 cell, tighter than C (0.71) and tighter than a bilinear ramp (0.80), while a real staircase stays the straight line at 0.80 cell, so a true gradient is not given extra blur. Weak-area change sits with A and C (Dickinson −0.017).
 
@@ -323,7 +329,7 @@ A bounded interpolator **replaces the dBZ array** that `sample_masked_splat` han
 
 ## Candidates
 
-These live in `src/mpwg_radar/dbz_interp_offline.py`. The cooker calls that module only for `MPWG_RALA_DBZ_INTERP=bilinear_peak_hold` (A) or `tight_peak_hold` (B). With the flag omitted, `render_tile` does not call it.
+These live in `src/mpwg_radar/dbz_interp_offline.py`. The cooker calls that module for `MPWG_RALA_DBZ_INTERP=bilinear_peak_hold` (A), `tight_peak_hold` (B), or `monotone_pchip` (D). D calls `sample_monotone_pchip` with no retune. With the flag omitted, `render_tile` does not call it.
 
 | Candidate | What it does to dBZ | Grid | Maxima / magenta | Cost vs p3l splat on one z9 tile |
 | --- | --- | --- | --- | --- |

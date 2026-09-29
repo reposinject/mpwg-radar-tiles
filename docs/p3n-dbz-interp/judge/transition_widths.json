@@ -1,0 +1,393 @@
+{
+  "sites": {
+    "dickinson": {
+      "ordinary": {
+        "nearest": {
+          "n": 145,
+          "median_cells": 0.0,
+          "p10_cells": 0.0,
+          "p90_cells": 0.0
+        },
+        "p3l": {
+          "n": 145,
+          "median_cells": 0.312,
+          "p10_cells": 0.312,
+          "p90_cells": 0.312
+        },
+        "bilinear-peak-hold": {
+          "n": 145,
+          "median_cells": 0.8,
+          "p10_cells": 0.797,
+          "p90_cells": 0.802
+        },
+        "tight-peak-hold": {
+          "n": 145,
+          "median_cells": 0.5,
+          "p10_cells": 0.497,
+          "p90_cells": 0.503
+        }
+      },
+      "peak_shoulder": {
+        "nearest": {
+          "n": 12,
+          "median_cells": 0.0,
+          "p10_cells": 0.0,
+          "p90_cells": 0.0
+        },
+        "p3l": {
+          "n": 12,
+          "median_cells": 0.312,
+          "p10_cells": 0.312,
+          "p90_cells": 0.312
+        },
+        "bilinear-peak-hold": {
+          "n": 12,
+          "median_cells": 0.555,
+          "p10_cells": 0.555,
+          "p90_cells": 0.557
+        },
+        "tight-peak-hold": {
+          "n": 12,
+          "median_cells": 0.405,
+          "p10_cells": 0.405,
+          "p90_cells": 0.408
+        }
+      }
+    },
+    "belle-fourche": {
+      "ordinary": {
+        "nearest": {
+          "n": 214,
+          "median_cells": 0.0,
+          "p10_cells": 0.0,
+          "p90_cells": 0.0
+        },
+        "p3l": {
+          "n": 214,
+          "median_cells": 0.312,
+          "p10_cells": 0.312,
+          "p90_cells": 0.312
+        },
+        "bilinear-peak-hold": {
+          "n": 214,
+          "median_cells": 0.8,
+          "p10_cells": 0.797,
+          "p90_cells": 0.802
+        },
+        "tight-peak-hold": {
+          "n": 214,
+          "median_cells": 0.5,
+          "p10_cells": 0.497,
+          "p90_cells": 0.503
+        }
+      },
+      "peak_shoulder": {
+        "nearest": {
+          "n": 12,
+          "median_cells": 0.0,
+          "p10_cells": 0.0,
+          "p90_cells": 0.0
+        },
+        "p3l": {
+          "n": 12,
+          "median_cells": 0.312,
+          "p10_cells": 0.312,
+          "p90_cells": 0.312
+        },
+        "bilinear-peak-hold": {
+          "n": 12,
+          "median_cells": 0.555,
+          "p10_cells": 0.555,
+          "p90_cells": 0.557
+        },
+        "tight-peak-hold": {
+          "n": 12,
+          "median_cells": 0.405,
+          "p10_cells": 0.405,
+          "p90_cells": 0.408
+        }
+      }
+    }
+  },
+  "screen_px": {
+    "css_px_per_cell_z9_dickinson": {
+      "ew": 3.641,
+      "ns": 5.334
+    },
+    "css_px_per_cell_z9_belle": {
+      "ew": 3.641,
+      "ns": 5.116
+    },
+    "published_dickinson_css_px_z9": {
+      "ew": 3.65,
+      "ns": 5.32
+    },
+    "note": "CSS px is a 256px slippy tile. The cooker writes 512px for that same tile, so a tight-crop image pixel is 2 CSS px (DPR 2). Widths below use the analytical 1D 10\u201390% cell fraction.",
+    "analytical_10_90_cells": {
+      "nearest": 0.0,
+      "p3l": 0.314,
+      "bilinear-peak-hold": 0.8,
+      "tight-peak-hold": 0.5
+    },
+    "css_px": {
+      "nearest": {
+        "z9": {
+          "ew_css_px": 0.0,
+          "ns_css_px": 0.0,
+          "ew_image_px_at_this_zoom": 0.0
+        },
+        "z10.45": {
+          "ew_css_px": 0.0,
+          "ns_css_px": 0.0,
+          "ew_image_px_at_this_zoom": 0.0
+        },
+        "z12": {
+          "ew_css_px": 0.0,
+          "ns_css_px": 0.0,
+          "ew_image_px_at_this_zoom": 0.0
+        },
+        "z13": {
+          "ew_css_px": 0.0,
+          "ns_css_px": 0.0,
+          "ew_image_px_at_this_zoom": 0.0
+        }
+      },
+      "p3l": {
+        "z9": {
+          "ew_css_px": 1.1,
+          "ns_css_px": 1.7,
+          "ew_image_px_at_this_zoom": 2.3
+        },
+        "z10.45": {
+          "ew_css_px": 3.1,
+          "ns_css_px": 4.6,
+          "ew_image_px_at_this_zoom": 6.2
+        },
+        "z12": {
+          "ew_css_px": 9.1,
+          "ns_css_px": 13.4,
+          "ew_image_px_at_this_zoom": 18.3
+        },
+        "z13": {
+          "ew_css_px": 18.3,
+          "ns_css_px": 26.8,
+          "ew_image_px_at_this_zoom": 36.6
+        }
+      },
+      "bilinear-peak-hold": {
+        "z9": {
+          "ew_css_px": 2.9,
+          "ns_css_px": 4.3,
+          "ew_image_px_at_this_zoom": 5.8
+        },
+        "z10.45": {
+          "ew_css_px": 8.0,
+          "ns_css_px": 11.7,
+          "ew_image_px_at_this_zoom": 15.9
+        },
+        "z12": {
+          "ew_css_px": 23.3,
+          "ns_css_px": 34.1,
+          "ew_image_px_at_this_zoom": 46.6
+        },
+        "z13": {
+          "ew_css_px": 46.6,
+          "ns_css_px": 68.3,
+          "ew_image_px_at_this_zoom": 93.2
+        }
+      },
+      "tight-peak-hold": {
+        "z9": {
+          "ew_css_px": 1.8,
+          "ns_css_px": 2.7,
+          "ew_image_px_at_this_zoom": 3.6
+        },
+        "z10.45": {
+          "ew_css_px": 5.0,
+          "ns_css_px": 7.3,
+          "ew_image_px_at_this_zoom": 9.9
+        },
+        "z12": {
+          "ew_css_px": 14.6,
+          "ns_css_px": 21.3,
+          "ew_image_px_at_this_zoom": 29.1
+        },
+        "z13": {
+          "ew_css_px": 29.1,
+          "ns_css_px": 42.7,
+          "ew_image_px_at_this_zoom": 58.3
+        }
+      }
+    }
+  },
+  "scale_aware": {
+    "bilinear_10_90_css_px_ew_z10_45": 8.0,
+    "bilinear_10_90_css_px_ew_z12": 23.3,
+    "tight_10_90_css_px_ew_z12": 14.6,
+    "cell_fraction_to_keep_z10_45_width_at_z12": 0.273,
+    "implemented": false,
+    "reason": "Screen-pixel width scales with 2^(map_zoom-9) because the z9 raster is magnified linearly. Matching the medium-zoom bilinear width (8.0 CSS px) at map z12 would need a 0.27-cell ramp, which is the p3l shelf James already rejected as blocks. Candidate B multiplies every zoom by 0.50/0.80 and does not add a per-zoom kernel. No z10 tiles."
+  },
+  "examples": [
+    {
+      "site": "dickinson",
+      "kind": "ordinary",
+      "axis": "ns",
+      "delta_dbz": 33.5,
+      "a_dbz": 14.0,
+      "b_dbz": 47.5,
+      "a_lat": 46.985,
+      "a_lon": -102.875,
+      "widths_cells": {
+        "nearest": 0.0,
+        "p3l": 0.312,
+        "bilinear-peak-hold": 0.797,
+        "tight-peak-hold": 0.497
+      }
+    },
+    {
+      "site": "dickinson",
+      "kind": "ordinary",
+      "axis": "ns",
+      "delta_dbz": 30.0,
+      "a_dbz": 13.5,
+      "b_dbz": 43.5,
+      "a_lat": 46.985,
+      "a_lon": -102.885,
+      "widths_cells": {
+        "nearest": 0.0,
+        "p3l": 0.312,
+        "bilinear-peak-hold": 0.8,
+        "tight-peak-hold": 0.5
+      }
+    },
+    {
+      "site": "dickinson",
+      "kind": "ordinary",
+      "axis": "ns",
+      "delta_dbz": 27.0,
+      "a_dbz": 20.5,
+      "b_dbz": 47.5,
+      "a_lat": 46.985,
+      "a_lon": -102.865,
+      "widths_cells": {
+        "nearest": 0.0,
+        "p3l": 0.312,
+        "bilinear-peak-hold": 0.8,
+        "tight-peak-hold": 0.5
+      }
+    },
+    {
+      "site": "dickinson",
+      "kind": "peak_shoulder",
+      "axis": "ns",
+      "delta_dbz": 13.5,
+      "a_dbz": 22.5,
+      "b_dbz": 9.0,
+      "a_lat": 46.875,
+      "a_lon": -103.135,
+      "widths_cells": {
+        "nearest": 0.0,
+        "p3l": 0.312,
+        "bilinear-peak-hold": 0.557,
+        "tight-peak-hold": 0.408
+      }
+    },
+    {
+      "site": "dickinson",
+      "kind": "peak_shoulder",
+      "axis": "ns",
+      "delta_dbz": 13.0,
+      "a_dbz": 37.5,
+      "b_dbz": 50.5,
+      "a_lat": 46.985,
+      "a_lon": -102.845,
+      "widths_cells": {
+        "nearest": 0.0,
+        "p3l": 0.312,
+        "bilinear-peak-hold": 0.555,
+        "tight-peak-hold": 0.405
+      }
+    },
+    {
+      "site": "belle-fourche",
+      "kind": "peak_shoulder",
+      "axis": "ns",
+      "delta_dbz": 34.0,
+      "a_dbz": 43.5,
+      "b_dbz": 9.5,
+      "a_lat": 44.605,
+      "a_lon": -103.595,
+      "widths_cells": {
+        "nearest": 0.0,
+        "p3l": 0.312,
+        "bilinear-peak-hold": 0.557,
+        "tight-peak-hold": 0.408
+      }
+    },
+    {
+      "site": "belle-fourche",
+      "kind": "ordinary",
+      "axis": "ns",
+      "delta_dbz": 33.0,
+      "a_dbz": 42.0,
+      "b_dbz": 9.0,
+      "a_lat": 44.515,
+      "a_lon": -103.745,
+      "widths_cells": {
+        "nearest": 0.0,
+        "p3l": 0.312,
+        "bilinear-peak-hold": 0.8,
+        "tight-peak-hold": 0.5
+      }
+    },
+    {
+      "site": "belle-fourche",
+      "kind": "ordinary",
+      "axis": "ns",
+      "delta_dbz": 32.5,
+      "a_dbz": 10.0,
+      "b_dbz": 42.5,
+      "a_lat": 44.635,
+      "a_lon": -103.575,
+      "widths_cells": {
+        "nearest": 0.0,
+        "p3l": 0.312,
+        "bilinear-peak-hold": 0.8,
+        "tight-peak-hold": 0.5
+      }
+    },
+    {
+      "site": "belle-fourche",
+      "kind": "ordinary",
+      "axis": "ns",
+      "delta_dbz": 29.0,
+      "a_dbz": 42.0,
+      "b_dbz": 13.0,
+      "a_lat": 44.515,
+      "a_lon": -103.755,
+      "widths_cells": {
+        "nearest": 0.0,
+        "p3l": 0.312,
+        "bilinear-peak-hold": 0.802,
+        "tight-peak-hold": 0.503
+      }
+    },
+    {
+      "site": "belle-fourche",
+      "kind": "peak_shoulder",
+      "axis": "ns",
+      "delta_dbz": 19.0,
+      "a_dbz": 51.0,
+      "b_dbz": 32.0,
+      "a_lat": 44.615,
+      "a_lon": -103.575,
+      "widths_cells": {
+        "nearest": 0.0,
+        "p3l": 0.312,
+        "bilinear-peak-hold": 0.557,
+        "tight-peak-hold": 0.408
+      }
+    }
+  ]
+}

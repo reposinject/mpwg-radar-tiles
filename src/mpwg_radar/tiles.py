@@ -11,6 +11,7 @@ from typing import Dict, Iterable, List, Optional, Tuple
 import numpy as np
 from PIL import Image
 
+from mpwg_radar.config import RALA_DBZ_INTERP_PEAK_HOLD, RALA_DBZ_INTERP_REVIEW
 from mpwg_radar.geo import BBox, iter_tiles, tile_bounds
 from mpwg_radar.grib import ReflectivityFrame
 from mpwg_radar.palette import Palette
@@ -480,6 +481,8 @@ def render_tile(
     y: int,
     tile_size: int = 512,
     sample_mode: str = SAMPLE_NEAREST,
+    dbz_interp: str = "",
+    peak_mask: Optional[np.ndarray] = None,
 ) -> Tuple[Image.Image, bool]:
     """Return (PNG image, has_echo).
 
@@ -488,6 +491,12 @@ def render_tile(
     path. ``masked-splat`` (RALA, p3l) keeps the nearest cell as the footprint
     and runs one seam: cell centers stay on the source dBZ, the shared face
     of two echo cells blends, and clear air is never a sample or a paint target.
+
+    ``dbz_interp`` defaults to off. ``bilinear_peak_hold`` and
+    ``tight_peak_hold`` replace the splat dBZ before the p3k LUT and keep the
+    p3l seam on local maxima. ``monotone_pchip`` is the harness monotone
+    cubic and does not hold a peak core. Category and clear-air alpha stay
+    on the splat. Omitting the argument, or passing ``""``, is the production splat.
     """
     qlon, qlat = _query_lonlat(z, x, y, tile_size)
     if sample_mode in (SAMPLE_MASKED_BILINEAR, SAMPLE_MASKED_SPLAT):
@@ -499,6 +508,25 @@ def render_tile(
         sampled, sampled_cat, edge_scale = sampler(
             frame.dbz, frame.lat, frame.lon, qlat, qlon, frame.category
         )
+        if sample_mode == SAMPLE_MASKED_SPLAT and dbz_interp in RALA_DBZ_INTERP_REVIEW:
+            # Category and edge_scale stay on the splat above. Only dBZ changes,
+            # and only before colorize. Local import: review samplers are not
+            # on the default call path.
+            from mpwg_radar.dbz_interp_offline import sample_review_dbz
+
+            held, _held_cat = sample_review_dbz(
+                dbz_interp,
+                frame.dbz,
+                frame.lat,
+                frame.lon,
+                qlat,
+                qlon,
+                frame.category,
+                peak_mask=peak_mask,
+            )
+            held = np.array(held, dtype=np.float32, copy=True)
+            held[sampled_cat != CAT_VALID] = np.float32(np.nan)
+            sampled = held
         rgba = palette.colorize(sampled, category=sampled_cat)
         # Palette alpha (wispy low dBZ) times the in-mask stamp. Clear-air
         # queries have edge_scale 0, so they cannot pick up a neighbor's color.
@@ -577,14 +605,30 @@ def write_tiles(
     skip_empty: bool = True,
     sample_mode: str = SAMPLE_NEAREST,
     workers: int = 1,
+    dbz_interp: str = "",
 ) -> Dict:
     """Write `{z}/{x}/{y}.png` under out_dir. Returns tile stats.
 
     ``workers`` > 1 renders echo tiles on a thread pool. Numpy releases the
     GIL inside the splat, so two workers fit a 2 vCPU host. The frame grid
     is read-only and is not copied per worker.
+
+    ``dbz_interp=""`` is production. ``bilinear_peak_hold``,
+    ``tight_peak_hold``, and ``monotone_pchip`` are review samplers and apply
+    only to ``masked-splat`` (RALA). The peak mask is built for A and B only.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
+    peak_mask = None
+    if dbz_interp in RALA_DBZ_INTERP_REVIEW and sample_mode == SAMPLE_MASKED_SPLAT:
+        log.warning(
+            "EXPERIMENTAL RALA dBZ interp %s is ON for this tile write. "
+            "Spatial stamp stays p3l. Do not deploy these tiles to production.",
+            dbz_interp,
+        )
+    if dbz_interp in RALA_DBZ_INTERP_PEAK_HOLD and sample_mode == SAMPLE_MASKED_SPLAT:
+        from mpwg_radar.dbz_interp_offline import local_peak_mask
+
+        peak_mask = local_peak_mask(frame.dbz, frame.category)
     skipped = 0
     jobs: List[Tuple[int, int, int]] = []
     # An empty parent tile has no echo in any child. Mark it and skip the
@@ -605,7 +649,15 @@ def write_tiles(
     def _one(item: Tuple[int, int, int]) -> Optional[str]:
         z, x, y = item
         image, has_echo = render_tile(
-            frame, palette, z, x, y, tile_size, sample_mode=sample_mode
+            frame,
+            palette,
+            z,
+            x,
+            y,
+            tile_size,
+            sample_mode=sample_mode,
+            dbz_interp=dbz_interp,
+            peak_mask=peak_mask,
         )
         if skip_empty and not has_echo:
             return None

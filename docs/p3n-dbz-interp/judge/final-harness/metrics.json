@@ -1,0 +1,882 @@
+{
+  "frame_id": "20260929T004243Z",
+  "not_production": true,
+  "flag_default": "off",
+  "spatial": "p3l",
+  "palette": "2026-09-rala-p3k",
+  "order": "native dBZ \u2192 constrained reconstruction \u2192 dense sampling \u2192 p3k \u2192 RGBA",
+  "tile_resolution": {
+    "cooker_z9_tile_px": 512,
+    "css_tile_px": 256,
+    "approx_css_px_per_cell_ew_at_z9": 3.65,
+    "harness": "8 samples per native 0.01\u00b0 cell, and 16 on the intense core",
+    "mapbox_second_blur": "Publishing only the z9 512px PNG leaves Mapbox to linearly filter those pixels when the map zooms past 9. That second filter widens whatever ramp is in the tile. This harness is the reconstruction itself, before that display filter. It is not an app screenshot."
+  },
+  "intense_plant": {
+    "lat": 46.94499999999999,
+    "lon": -102.855,
+    "original_dbz": 58.0,
+    "planted_dbz": 68.0,
+    "reason": "This CONUS frame has no observed cell >= 65. The plant is not observed dBZ."
+  },
+  "transitions": {
+    "layout": "one cell per level, 20 then 30 then 40 then 50 then 60 then 70",
+    "segments": {
+      "20->30": {
+        "raw": {
+          "width_10_90_cells": 0.0,
+          "min_dbz": 20.0,
+          "max_dbz": 30.0
+        },
+        "A": {
+          "width_10_90_cells": 0.8,
+          "min_dbz": 20.0,
+          "max_dbz": 30.0
+        },
+        "B": {
+          "width_10_90_cells": 0.5,
+          "min_dbz": 20.0,
+          "max_dbz": 30.0
+        },
+        "C": {
+          "width_10_90_cells": 0.8,
+          "min_dbz": 20.0,
+          "max_dbz": 30.0
+        },
+        "D": {
+          "width_10_90_cells": 0.8,
+          "min_dbz": 20.0,
+          "max_dbz": 30.0
+        }
+      },
+      "30->40": {
+        "raw": {
+          "width_10_90_cells": 0.0,
+          "min_dbz": 30.0,
+          "max_dbz": 40.0
+        },
+        "A": {
+          "width_10_90_cells": 0.8,
+          "min_dbz": 30.0,
+          "max_dbz": 40.0
+        },
+        "B": {
+          "width_10_90_cells": 0.5,
+          "min_dbz": 30.0,
+          "max_dbz": 40.0
+        },
+        "C": {
+          "width_10_90_cells": 0.8,
+          "min_dbz": 30.0,
+          "max_dbz": 40.0
+        },
+        "D": {
+          "width_10_90_cells": 0.8,
+          "min_dbz": 30.0,
+          "max_dbz": 40.0
+        }
+      },
+      "40->50": {
+        "raw": {
+          "width_10_90_cells": 0.0,
+          "min_dbz": 40.0,
+          "max_dbz": 50.0
+        },
+        "A": {
+          "width_10_90_cells": 0.8,
+          "min_dbz": 40.0,
+          "max_dbz": 50.0
+        },
+        "B": {
+          "width_10_90_cells": 0.5,
+          "min_dbz": 40.0,
+          "max_dbz": 50.0
+        },
+        "C": {
+          "width_10_90_cells": 0.8,
+          "min_dbz": 40.0,
+          "max_dbz": 50.0
+        },
+        "D": {
+          "width_10_90_cells": 0.8,
+          "min_dbz": 40.0,
+          "max_dbz": 50.0
+        }
+      },
+      "50->60": {
+        "raw": {
+          "width_10_90_cells": 0.0,
+          "min_dbz": 50.0,
+          "max_dbz": 60.0
+        },
+        "A": {
+          "width_10_90_cells": 0.8,
+          "min_dbz": 50.0,
+          "max_dbz": 60.0
+        },
+        "B": {
+          "width_10_90_cells": 0.5,
+          "min_dbz": 50.0,
+          "max_dbz": 60.0
+        },
+        "C": {
+          "width_10_90_cells": 0.8,
+          "min_dbz": 50.0,
+          "max_dbz": 60.0
+        },
+        "D": {
+          "width_10_90_cells": 0.8,
+          "min_dbz": 50.0,
+          "max_dbz": 60.0
+        }
+      },
+      "60->>=65": {
+        "raw": {
+          "width_10_90_cells": 0.0,
+          "min_dbz": 60.0,
+          "max_dbz": 70.0
+        },
+        "A": {
+          "width_10_90_cells": 0.557,
+          "min_dbz": 60.0,
+          "max_dbz": 70.0
+        },
+        "B": {
+          "width_10_90_cells": 0.407,
+          "min_dbz": 60.0,
+          "max_dbz": 70.0
+        },
+        "C": {
+          "width_10_90_cells": 0.8,
+          "min_dbz": 60.0,
+          "max_dbz": 70.0
+        },
+        "D": {
+          "width_10_90_cells": 0.8,
+          "min_dbz": 60.0,
+          "max_dbz": 70.0
+        }
+      }
+    },
+    "flat_to_flat_20_30": {
+      "raw": {
+        "width_10_90_cells": 0.0,
+        "min_dbz": 20.0,
+        "max_dbz": 30.0
+      },
+      "A": {
+        "width_10_90_cells": 0.557,
+        "min_dbz": 20.0,
+        "max_dbz": 30.0
+      },
+      "B": {
+        "width_10_90_cells": 0.407,
+        "min_dbz": 20.0,
+        "max_dbz": 30.0
+      },
+      "C": {
+        "width_10_90_cells": 0.713,
+        "min_dbz": 20.0,
+        "max_dbz": 30.0
+      },
+      "D": {
+        "width_10_90_cells": 0.608,
+        "min_dbz": 20.0,
+        "max_dbz": 30.0
+      }
+    }
+  },
+  "sites": {
+    "dickinson_tight": {
+      "bbox": {
+        "west": -103.15,
+        "south": 46.7,
+        "east": -102.4,
+        "north": 47.25,
+        "name": "dickinson-tight"
+      },
+      "samples_per_cell": 8,
+      "image_hw": [
+        440,
+        600
+      ],
+      "methods": {
+        "raw": {
+          "source_cells_valid": 1223,
+          "source_cells_noecho": 2902,
+          "source_min_dbz": 5.5,
+          "source_max_dbz": 58.0,
+          "recon_min_dbz": 5.5,
+          "recon_max_dbz": 58.0,
+          "overshoot_high_dbz": 0.0,
+          "overshoot_low_dbz": 0.0,
+          "center_mae_dbz": 0.0,
+          "center_max_abs_dbz": 0.0,
+          "source_ge65_cells": 0,
+          "centers_ge65_still_ge65": 0,
+          "source_area_fraction_ge65": 0.0,
+          "recon_area_fraction_ge65": 0.0,
+          "noecho_numeric_leaks": 0,
+          "source_weak_fraction_le_10": 0.0581,
+          "recon_weak_fraction_le_10": 0.0581,
+          "weak_fraction_change": 0.0,
+          "flatness": {
+            "inner_flat_fraction_steps_ge_8": 1.0,
+            "n_steps": 260,
+            "inner_flat_fraction_peaks_ge_50": 1.0,
+            "n_peaks_ge_50": 2
+          },
+          "samples_per_cell": 8,
+          "image_hw": [
+            440,
+            600
+          ]
+        },
+        "A": {
+          "source_cells_valid": 1223,
+          "source_cells_noecho": 2902,
+          "source_min_dbz": 5.5,
+          "source_max_dbz": 58.0,
+          "recon_min_dbz": 5.625,
+          "recon_max_dbz": 58.0,
+          "overshoot_high_dbz": 0.0,
+          "overshoot_low_dbz": 0.0,
+          "center_mae_dbz": 0.0,
+          "center_max_abs_dbz": 0.0,
+          "source_ge65_cells": 0,
+          "centers_ge65_still_ge65": 0,
+          "source_area_fraction_ge65": 0.0,
+          "recon_area_fraction_ge65": 0.0,
+          "noecho_numeric_leaks": 0,
+          "source_weak_fraction_le_10": 0.0581,
+          "recon_weak_fraction_le_10": 0.0396,
+          "weak_fraction_change": -0.0185,
+          "flatness": {
+            "inner_flat_fraction_steps_ge_8": 0.5,
+            "n_steps": 260,
+            "inner_flat_fraction_peaks_ge_50": 1.0,
+            "n_peaks_ge_50": 2
+          },
+          "samples_per_cell": 8,
+          "image_hw": [
+            440,
+            600
+          ]
+        },
+        "B": {
+          "source_cells_valid": 1223,
+          "source_cells_noecho": 2902,
+          "source_min_dbz": 5.5,
+          "source_max_dbz": 58.0,
+          "recon_min_dbz": 5.509,
+          "recon_max_dbz": 58.0,
+          "overshoot_high_dbz": 0.0,
+          "overshoot_low_dbz": 0.0,
+          "center_mae_dbz": 0.0,
+          "center_max_abs_dbz": 0.0,
+          "source_ge65_cells": 0,
+          "centers_ge65_still_ge65": 0,
+          "source_area_fraction_ge65": 0.0,
+          "recon_area_fraction_ge65": 0.0,
+          "noecho_numeric_leaks": 0,
+          "source_weak_fraction_le_10": 0.0581,
+          "recon_weak_fraction_le_10": 0.0431,
+          "weak_fraction_change": -0.0149,
+          "flatness": {
+            "inner_flat_fraction_steps_ge_8": 1.0,
+            "n_steps": 260,
+            "inner_flat_fraction_peaks_ge_50": 1.0,
+            "n_peaks_ge_50": 2
+          },
+          "samples_per_cell": 8,
+          "image_hw": [
+            440,
+            600
+          ]
+        },
+        "C": {
+          "source_cells_valid": 1223,
+          "source_cells_noecho": 2902,
+          "source_min_dbz": 5.5,
+          "source_max_dbz": 58.0,
+          "recon_min_dbz": 5.625,
+          "recon_max_dbz": 57.963,
+          "overshoot_high_dbz": 0.0,
+          "overshoot_low_dbz": 0.0,
+          "center_mae_dbz": 0.0,
+          "center_max_abs_dbz": 0.0,
+          "source_ge65_cells": 0,
+          "centers_ge65_still_ge65": 0,
+          "source_area_fraction_ge65": 0.0,
+          "recon_area_fraction_ge65": 0.0,
+          "noecho_numeric_leaks": 0,
+          "source_weak_fraction_le_10": 0.0581,
+          "recon_weak_fraction_le_10": 0.0402,
+          "weak_fraction_change": -0.0178,
+          "flatness": {
+            "inner_flat_fraction_steps_ge_8": 0.5,
+            "n_steps": 260,
+            "inner_flat_fraction_peaks_ge_50": 0.875,
+            "n_peaks_ge_50": 2
+          },
+          "samples_per_cell": 8,
+          "image_hw": [
+            440,
+            600
+          ]
+        },
+        "D": {
+          "source_cells_valid": 1223,
+          "source_cells_noecho": 2902,
+          "source_min_dbz": 5.5,
+          "source_max_dbz": 58.0,
+          "recon_min_dbz": 5.625,
+          "recon_max_dbz": 57.951,
+          "overshoot_high_dbz": 0.0,
+          "overshoot_low_dbz": 0.0,
+          "center_mae_dbz": 0.0,
+          "center_max_abs_dbz": 0.0,
+          "source_ge65_cells": 0,
+          "centers_ge65_still_ge65": 0,
+          "source_area_fraction_ge65": 0.0,
+          "recon_area_fraction_ge65": 0.0,
+          "noecho_numeric_leaks": 0,
+          "source_weak_fraction_le_10": 0.0581,
+          "recon_weak_fraction_le_10": 0.0409,
+          "weak_fraction_change": -0.0171,
+          "flatness": {
+            "inner_flat_fraction_steps_ge_8": 0.75,
+            "n_steps": 260,
+            "inner_flat_fraction_peaks_ge_50": 1.0,
+            "n_peaks_ge_50": 2
+          },
+          "samples_per_cell": 8,
+          "image_hw": [
+            440,
+            600
+          ]
+        }
+      }
+    },
+    "belle_fourche_tight": {
+      "bbox": {
+        "west": -103.98,
+        "south": 44.5,
+        "east": -103.45,
+        "north": 44.8,
+        "name": "belle-fourche-tight"
+      },
+      "samples_per_cell": 8,
+      "image_hw": [
+        240,
+        424
+      ],
+      "methods": {
+        "raw": {
+          "source_cells_valid": 912,
+          "source_cells_noecho": 678,
+          "source_min_dbz": 4.0,
+          "source_max_dbz": 58.0,
+          "recon_min_dbz": 4.0,
+          "recon_max_dbz": 58.0,
+          "overshoot_high_dbz": 0.0,
+          "overshoot_low_dbz": 0.0,
+          "center_mae_dbz": 0.0,
+          "center_max_abs_dbz": 0.0,
+          "source_ge65_cells": 0,
+          "centers_ge65_still_ge65": 0,
+          "source_area_fraction_ge65": 0.0,
+          "recon_area_fraction_ge65": 0.0,
+          "noecho_numeric_leaks": 0,
+          "source_weak_fraction_le_10": 0.0515,
+          "recon_weak_fraction_le_10": 0.0515,
+          "weak_fraction_change": 0.0,
+          "flatness": {
+            "inner_flat_fraction_steps_ge_8": 1.0,
+            "n_steps": 340,
+            "inner_flat_fraction_peaks_ge_50": 1.0,
+            "n_peaks_ge_50": 2
+          },
+          "samples_per_cell": 8,
+          "image_hw": [
+            240,
+            424
+          ]
+        },
+        "A": {
+          "source_cells_valid": 912,
+          "source_cells_noecho": 678,
+          "source_min_dbz": 4.0,
+          "source_max_dbz": 58.0,
+          "recon_min_dbz": 4.295,
+          "recon_max_dbz": 58.0,
+          "overshoot_high_dbz": 0.0,
+          "overshoot_low_dbz": 0.0,
+          "center_mae_dbz": 0.0,
+          "center_max_abs_dbz": 0.0,
+          "source_ge65_cells": 0,
+          "centers_ge65_still_ge65": 0,
+          "source_area_fraction_ge65": 0.0,
+          "recon_area_fraction_ge65": 0.0,
+          "noecho_numeric_leaks": 0,
+          "source_weak_fraction_le_10": 0.0515,
+          "recon_weak_fraction_le_10": 0.0359,
+          "weak_fraction_change": -0.0156,
+          "flatness": {
+            "inner_flat_fraction_steps_ge_8": 0.5,
+            "n_steps": 340,
+            "inner_flat_fraction_peaks_ge_50": 1.0,
+            "n_peaks_ge_50": 2
+          },
+          "samples_per_cell": 8,
+          "image_hw": [
+            240,
+            424
+          ]
+        },
+        "B": {
+          "source_cells_valid": 912,
+          "source_cells_noecho": 678,
+          "source_min_dbz": 4.0,
+          "source_max_dbz": 58.0,
+          "recon_min_dbz": 4.02,
+          "recon_max_dbz": 58.0,
+          "overshoot_high_dbz": 0.0,
+          "overshoot_low_dbz": 0.0,
+          "center_mae_dbz": 0.0,
+          "center_max_abs_dbz": 0.0,
+          "source_ge65_cells": 0,
+          "centers_ge65_still_ge65": 0,
+          "source_area_fraction_ge65": 0.0,
+          "recon_area_fraction_ge65": 0.0,
+          "noecho_numeric_leaks": 0,
+          "source_weak_fraction_le_10": 0.0515,
+          "recon_weak_fraction_le_10": 0.0396,
+          "weak_fraction_change": -0.0119,
+          "flatness": {
+            "inner_flat_fraction_steps_ge_8": 1.0,
+            "n_steps": 340,
+            "inner_flat_fraction_peaks_ge_50": 1.0,
+            "n_peaks_ge_50": 2
+          },
+          "samples_per_cell": 8,
+          "image_hw": [
+            240,
+            424
+          ]
+        },
+        "C": {
+          "source_cells_valid": 912,
+          "source_cells_noecho": 678,
+          "source_min_dbz": 4.0,
+          "source_max_dbz": 58.0,
+          "recon_min_dbz": 4.295,
+          "recon_max_dbz": 57.962,
+          "overshoot_high_dbz": 0.0,
+          "overshoot_low_dbz": 0.0,
+          "center_mae_dbz": 0.0,
+          "center_max_abs_dbz": 0.0,
+          "source_ge65_cells": 0,
+          "centers_ge65_still_ge65": 0,
+          "source_area_fraction_ge65": 0.0,
+          "recon_area_fraction_ge65": 0.0,
+          "noecho_numeric_leaks": 0,
+          "source_weak_fraction_le_10": 0.0515,
+          "recon_weak_fraction_le_10": 0.0378,
+          "weak_fraction_change": -0.0138,
+          "flatness": {
+            "inner_flat_fraction_steps_ge_8": 0.5,
+            "n_steps": 340,
+            "inner_flat_fraction_peaks_ge_50": 0.625,
+            "n_peaks_ge_50": 2
+          },
+          "samples_per_cell": 8,
+          "image_hw": [
+            240,
+            424
+          ]
+        },
+        "D": {
+          "source_cells_valid": 912,
+          "source_cells_noecho": 678,
+          "source_min_dbz": 4.0,
+          "source_max_dbz": 58.0,
+          "recon_min_dbz": 4.064,
+          "recon_max_dbz": 57.934,
+          "overshoot_high_dbz": 0.0,
+          "overshoot_low_dbz": 0.0,
+          "center_mae_dbz": 0.0,
+          "center_max_abs_dbz": 0.0,
+          "source_ge65_cells": 0,
+          "centers_ge65_still_ge65": 0,
+          "source_area_fraction_ge65": 0.0,
+          "recon_area_fraction_ge65": 0.0,
+          "noecho_numeric_leaks": 0,
+          "source_weak_fraction_le_10": 0.0515,
+          "recon_weak_fraction_le_10": 0.0384,
+          "weak_fraction_change": -0.0131,
+          "flatness": {
+            "inner_flat_fraction_steps_ge_8": 0.75,
+            "n_steps": 340,
+            "inner_flat_fraction_peaks_ge_50": 1.0,
+            "n_peaks_ge_50": 2
+          },
+          "samples_per_cell": 8,
+          "image_hw": [
+            240,
+            424
+          ]
+        }
+      }
+    },
+    "intense65_core": {
+      "bbox": {
+        "west": -102.98,
+        "south": 46.86,
+        "east": -102.72,
+        "north": 47.06,
+        "name": "intense65-core"
+      },
+      "samples_per_cell": 8,
+      "image_hw": [
+        160,
+        208
+      ],
+      "methods": {
+        "raw": {
+          "source_cells_valid": 288,
+          "source_cells_noecho": 232,
+          "source_min_dbz": 7.0,
+          "source_max_dbz": 68.0,
+          "recon_min_dbz": 7.0,
+          "recon_max_dbz": 68.0,
+          "overshoot_high_dbz": 0.0,
+          "overshoot_low_dbz": 0.0,
+          "center_mae_dbz": 0.0,
+          "center_max_abs_dbz": 0.0,
+          "source_ge65_cells": 1,
+          "centers_ge65_still_ge65": 1,
+          "source_area_fraction_ge65": 0.0035,
+          "recon_area_fraction_ge65": 0.0035,
+          "noecho_numeric_leaks": 0,
+          "source_weak_fraction_le_10": 0.0278,
+          "recon_weak_fraction_le_10": 0.0278,
+          "weak_fraction_change": 0.0,
+          "flatness": {
+            "inner_flat_fraction_steps_ge_8": 1.0,
+            "n_steps": 110,
+            "inner_flat_fraction_peaks_ge_50": 1.0,
+            "n_peaks_ge_50": 2
+          },
+          "samples_per_cell": 8,
+          "image_hw": [
+            160,
+            208
+          ]
+        },
+        "A": {
+          "source_cells_valid": 288,
+          "source_cells_noecho": 232,
+          "source_min_dbz": 7.0,
+          "source_max_dbz": 68.0,
+          "recon_min_dbz": 7.062,
+          "recon_max_dbz": 68.0,
+          "overshoot_high_dbz": 0.0,
+          "overshoot_low_dbz": 0.0,
+          "center_mae_dbz": 0.0,
+          "center_max_abs_dbz": 0.0,
+          "source_ge65_cells": 1,
+          "centers_ge65_still_ge65": 1,
+          "source_area_fraction_ge65": 0.0035,
+          "recon_area_fraction_ge65": 0.002,
+          "noecho_numeric_leaks": 0,
+          "source_weak_fraction_le_10": 0.0278,
+          "recon_weak_fraction_le_10": 0.0214,
+          "weak_fraction_change": -0.0063,
+          "flatness": {
+            "inner_flat_fraction_steps_ge_8": 0.5,
+            "n_steps": 110,
+            "inner_flat_fraction_peaks_ge_50": 1.0,
+            "n_peaks_ge_50": 2
+          },
+          "samples_per_cell": 8,
+          "image_hw": [
+            160,
+            208
+          ]
+        },
+        "B": {
+          "source_cells_valid": 288,
+          "source_cells_noecho": 232,
+          "source_min_dbz": 7.0,
+          "source_max_dbz": 68.0,
+          "recon_min_dbz": 7.004,
+          "recon_max_dbz": 68.0,
+          "overshoot_high_dbz": 0.0,
+          "overshoot_low_dbz": 0.0,
+          "center_mae_dbz": 0.0,
+          "center_max_abs_dbz": 0.0,
+          "source_ge65_cells": 1,
+          "centers_ge65_still_ge65": 1,
+          "source_area_fraction_ge65": 0.0035,
+          "recon_area_fraction_ge65": 0.002,
+          "noecho_numeric_leaks": 0,
+          "source_weak_fraction_le_10": 0.0278,
+          "recon_weak_fraction_le_10": 0.0235,
+          "weak_fraction_change": -0.0042,
+          "flatness": {
+            "inner_flat_fraction_steps_ge_8": 1.0,
+            "n_steps": 110,
+            "inner_flat_fraction_peaks_ge_50": 1.0,
+            "n_peaks_ge_50": 2
+          },
+          "samples_per_cell": 8,
+          "image_hw": [
+            160,
+            208
+          ]
+        },
+        "C": {
+          "source_cells_valid": 288,
+          "source_cells_noecho": 232,
+          "source_min_dbz": 7.0,
+          "source_max_dbz": 68.0,
+          "recon_min_dbz": 7.062,
+          "recon_max_dbz": 67.96,
+          "overshoot_high_dbz": 0.0,
+          "overshoot_low_dbz": 0.0,
+          "center_mae_dbz": 0.0,
+          "center_max_abs_dbz": 0.0,
+          "source_ge65_cells": 1,
+          "centers_ge65_still_ge65": 1,
+          "source_area_fraction_ge65": 0.0035,
+          "recon_area_fraction_ge65": 0.0012,
+          "noecho_numeric_leaks": 0,
+          "source_weak_fraction_le_10": 0.0278,
+          "recon_weak_fraction_le_10": 0.0216,
+          "weak_fraction_change": -0.0061,
+          "flatness": {
+            "inner_flat_fraction_steps_ge_8": 0.5,
+            "n_steps": 110,
+            "inner_flat_fraction_peaks_ge_50": 0.75,
+            "n_peaks_ge_50": 2
+          },
+          "samples_per_cell": 8,
+          "image_hw": [
+            160,
+            208
+          ]
+        },
+        "D": {
+          "source_cells_valid": 288,
+          "source_cells_noecho": 232,
+          "source_min_dbz": 7.0,
+          "source_max_dbz": 68.0,
+          "recon_min_dbz": 7.005,
+          "recon_max_dbz": 67.755,
+          "overshoot_high_dbz": 0.0,
+          "overshoot_low_dbz": 0.0,
+          "center_mae_dbz": 0.0,
+          "center_max_abs_dbz": 0.0,
+          "source_ge65_cells": 1,
+          "centers_ge65_still_ge65": 1,
+          "source_area_fraction_ge65": 0.0035,
+          "recon_area_fraction_ge65": 0.001,
+          "noecho_numeric_leaks": 0,
+          "source_weak_fraction_le_10": 0.0278,
+          "recon_weak_fraction_le_10": 0.0225,
+          "weak_fraction_change": -0.0053,
+          "flatness": {
+            "inner_flat_fraction_steps_ge_8": 0.625,
+            "n_steps": 110,
+            "inner_flat_fraction_peaks_ge_50": 0.75,
+            "n_peaks_ge_50": 2
+          },
+          "samples_per_cell": 8,
+          "image_hw": [
+            160,
+            208
+          ]
+        }
+      }
+    },
+    "intense65_core_16x": {
+      "bbox": {
+        "west": -102.98,
+        "south": 46.86,
+        "east": -102.72,
+        "north": 47.06,
+        "name": "intense65-core"
+      },
+      "samples_per_cell": 16,
+      "image_hw": [
+        320,
+        416
+      ],
+      "methods": {
+        "raw": {
+          "source_cells_valid": 288,
+          "source_cells_noecho": 232,
+          "source_min_dbz": 7.0,
+          "source_max_dbz": 68.0,
+          "recon_min_dbz": 7.0,
+          "recon_max_dbz": 68.0,
+          "overshoot_high_dbz": 0.0,
+          "overshoot_low_dbz": 0.0,
+          "center_mae_dbz": 0.0,
+          "center_max_abs_dbz": 0.0,
+          "source_ge65_cells": 1,
+          "centers_ge65_still_ge65": 1,
+          "source_area_fraction_ge65": 0.0035,
+          "recon_area_fraction_ge65": 0.0035,
+          "noecho_numeric_leaks": 0,
+          "source_weak_fraction_le_10": 0.0278,
+          "recon_weak_fraction_le_10": 0.0278,
+          "weak_fraction_change": 0.0,
+          "flatness": {
+            "inner_flat_fraction_steps_ge_8": 1.0,
+            "n_steps": 110,
+            "inner_flat_fraction_peaks_ge_50": 1.0,
+            "n_peaks_ge_50": 2
+          },
+          "samples_per_cell": 16,
+          "image_hw": [
+            320,
+            416
+          ]
+        },
+        "A": {
+          "source_cells_valid": 288,
+          "source_cells_noecho": 232,
+          "source_min_dbz": 7.0,
+          "source_max_dbz": 68.0,
+          "recon_min_dbz": 7.031,
+          "recon_max_dbz": 68.0,
+          "overshoot_high_dbz": 0.0,
+          "overshoot_low_dbz": 0.0,
+          "center_mae_dbz": 0.0,
+          "center_max_abs_dbz": 0.0,
+          "source_ge65_cells": 1,
+          "centers_ge65_still_ge65": 1,
+          "source_area_fraction_ge65": 0.0035,
+          "recon_area_fraction_ge65": 0.0019,
+          "noecho_numeric_leaks": 0,
+          "source_weak_fraction_le_10": 0.0278,
+          "recon_weak_fraction_le_10": 0.0214,
+          "weak_fraction_change": -0.0064,
+          "flatness": {
+            "inner_flat_fraction_steps_ge_8": 0.5,
+            "n_steps": 110,
+            "inner_flat_fraction_peaks_ge_50": 1.0,
+            "n_peaks_ge_50": 2
+          },
+          "samples_per_cell": 16,
+          "image_hw": [
+            320,
+            416
+          ]
+        },
+        "B": {
+          "source_cells_valid": 288,
+          "source_cells_noecho": 232,
+          "source_min_dbz": 7.0,
+          "source_max_dbz": 68.0,
+          "recon_min_dbz": 7.001,
+          "recon_max_dbz": 68.0,
+          "overshoot_high_dbz": 0.0,
+          "overshoot_low_dbz": 0.0,
+          "center_mae_dbz": 0.0,
+          "center_max_abs_dbz": 0.0,
+          "source_ge65_cells": 1,
+          "centers_ge65_still_ge65": 1,
+          "source_area_fraction_ge65": 0.0035,
+          "recon_area_fraction_ge65": 0.0019,
+          "noecho_numeric_leaks": 0,
+          "source_weak_fraction_le_10": 0.0278,
+          "recon_weak_fraction_le_10": 0.0239,
+          "weak_fraction_change": -0.0038,
+          "flatness": {
+            "inner_flat_fraction_steps_ge_8": 1.0,
+            "n_steps": 110,
+            "inner_flat_fraction_peaks_ge_50": 1.0,
+            "n_peaks_ge_50": 2
+          },
+          "samples_per_cell": 16,
+          "image_hw": [
+            320,
+            416
+          ]
+        },
+        "C": {
+          "source_cells_valid": 288,
+          "source_cells_noecho": 232,
+          "source_min_dbz": 7.0,
+          "source_max_dbz": 68.0,
+          "recon_min_dbz": 7.031,
+          "recon_max_dbz": 67.996,
+          "overshoot_high_dbz": 0.0,
+          "overshoot_low_dbz": 0.0,
+          "center_mae_dbz": 0.0,
+          "center_max_abs_dbz": 0.0,
+          "source_ge65_cells": 1,
+          "centers_ge65_still_ge65": 1,
+          "source_area_fraction_ge65": 0.0035,
+          "recon_area_fraction_ge65": 0.0011,
+          "noecho_numeric_leaks": 0,
+          "source_weak_fraction_le_10": 0.0278,
+          "recon_weak_fraction_le_10": 0.0216,
+          "weak_fraction_change": -0.0062,
+          "flatness": {
+            "inner_flat_fraction_steps_ge_8": 0.5,
+            "n_steps": 110,
+            "inner_flat_fraction_peaks_ge_50": 0.75,
+            "n_peaks_ge_50": 2
+          },
+          "samples_per_cell": 16,
+          "image_hw": [
+            320,
+            416
+          ]
+        },
+        "D": {
+          "source_cells_valid": 288,
+          "source_cells_noecho": 232,
+          "source_min_dbz": 7.0,
+          "source_max_dbz": 68.0,
+          "recon_min_dbz": 7.001,
+          "recon_max_dbz": 67.937,
+          "overshoot_high_dbz": 0.0,
+          "overshoot_low_dbz": 0.0,
+          "center_mae_dbz": 0.0,
+          "center_max_abs_dbz": 0.0,
+          "source_ge65_cells": 1,
+          "centers_ge65_still_ge65": 1,
+          "source_area_fraction_ge65": 0.0035,
+          "recon_area_fraction_ge65": 0.0011,
+          "noecho_numeric_leaks": 0,
+          "source_weak_fraction_le_10": 0.0278,
+          "recon_weak_fraction_le_10": 0.0223,
+          "weak_fraction_change": -0.0054,
+          "flatness": {
+            "inner_flat_fraction_steps_ge_8": 0.625,
+            "n_steps": 110,
+            "inner_flat_fraction_peaks_ge_50": 0.75,
+            "n_peaks_ge_50": 2
+          },
+          "samples_per_cell": 16,
+          "image_hw": [
+            320,
+            416
+          ]
+        }
+      }
+    }
+  },
+  "methods": {
+    "raw": "Nearest native cell. The control. Interiors are constant because the source cell is constant.",
+    "A": "Masked bilinear, with the p3l seam held on local maxima (including tied plateaus). 10\u201390% width 0.80 cell on a plain ramp. The hold keeps a flat core out to 0.28 cell.",
+    "B": "Same hold as A. The bilinear fraction uses power 2, so a plain ramp's 10\u201390% width is 0.50 cell. Peaks are still the flat p3l core.",
+    "C": "Catmull-Rom on valid taps, kept only when the value is already inside the 2\u00d72 cell-center range. Otherwise the masked bilinear sample is left in place, so a clip cannot stamp a shelf. Centers match. NO-ECHO is not a tap.",
+    "D": "Successive monotone cubic Hermite. Slopes are zero at a local extremum and capped so each segment stays between its endpoints. The peak is the source value at the cell center and is not held across a core. Centers match. NO-ECHO is not a tap."
+  }
+}

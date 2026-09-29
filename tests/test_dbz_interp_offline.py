@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import numpy as np
 
+from mpwg_radar.config import (
+    RALA_DBZ_INTERP_BILINEAR_PEAK_HOLD,
+    load_config,
+    normalize_rala_dbz_interp,
+)
 from mpwg_radar.dbz_interp_offline import (
     CANDIDATE_BICUBIC,
     CANDIDATE_BILINEAR,
@@ -15,12 +21,13 @@ from mpwg_radar.dbz_interp_offline import (
     Z9_HALF_PIXEL_EW,
     Z9_HALF_PIXEL_NS,
     paint_candidate_tile,
+    sample_bilinear_peak_hold,
     sample_dbz_candidate,
 )
 from mpwg_radar.geo import latlon_to_global_xy
 from mpwg_radar.palette import RALA_PALETTE_VERSION, load_palette
 from mpwg_radar.products import CAT_MISSING, CAT_NO_ECHO, CAT_VALID, get_product
-from mpwg_radar.tiles import SPATIAL_REVISION, _DETAIL_CORE, render_tile
+from mpwg_radar.tiles import SPATIAL_REVISION, _DETAIL_CORE, render_tile, sample_masked_splat
 from tests.test_rala_render import _frame
 
 
@@ -46,26 +53,23 @@ def _at(lat, lon, j, i, dj, di):
     return qlat, qlon
 
 
-def test_production_modules_do_not_import_the_offline_interp():
-    root = Path(__file__).resolve().parents[1] / "src" / "mpwg_radar"
-    for name in (
-        "cooker.py",
-        "tiles.py",
-        "products.py",
-        "palette.py",
-        "cli.py",
-        "qc.py",
-        "grib.py",
-        "config.py",
-    ):
-        text = (root / name).read_text()
-        assert "dbz_interp_offline" not in text, name
+def test_production_stamps_stay_p3l_and_the_flag_defaults_off():
+    """The review sampler is opt-in. Stamps and the default call stay p3l."""
     assert SPATIAL_REVISION == "p3l"
     assert abs(float(_DETAIL_CORE) - 0.28) < 1e-6
     assert RALA_PALETTE_VERSION == "2026-09-rala-p3k"
     assert get_product("rala").sample_mode == "masked-splat"
     assert PRODUCTION_NAME == "p3l"
     assert "p3l" not in CANDIDATE_IDS
+    assert normalize_rala_dbz_interp(None) == ""
+    assert normalize_rala_dbz_interp("") == ""
+    assert normalize_rala_dbz_interp("off") == ""
+    assert normalize_rala_dbz_interp("p3l") == ""
+    assert normalize_rala_dbz_interp("bilinear_peak_hold") == RALA_DBZ_INTERP_BILINEAR_PEAK_HOLD
+    assert normalize_rala_dbz_interp("bilinear-peak-hold") == RALA_DBZ_INTERP_BILINEAR_PEAK_HOLD
+    import inspect
+
+    assert inspect.signature(render_tile).parameters["dbz_interp"].default == ""
 
 
 def test_candidates_keep_cell_centers_and_refuse_clear_air():
@@ -190,6 +194,110 @@ def test_bicubic_cannot_leave_the_local_source_range():
     assert abs(float(center[0, 0]) - 100.0) < 1e-3
 
 
+def test_flag_off_matches_p3l_numerical_field_and_paint(monkeypatch):
+    """Omitting the flag is the production splat, not a second implementation."""
+    lat, lon, dbz, cat = _peak_grid()
+    frame = _frame(dbz, lat, lon, cat)
+    pal = load_palette("mpwg-rala-2026-09")
+    gx, gy = latlon_to_global_xy(float(lon[10]), float(lat[10]), 9)
+    z, x, y = 9, int(gx), int(gy)
+    qlon, qlat = _query_for_tile(z, x, y)
+    captured = {}
+
+    def _capture(src, src_lat, src_lon, query_lat, query_lon, category=None):
+        out = sample_masked_splat(src, src_lat, src_lon, query_lat, query_lon, category)
+        captured["out"] = out
+        return out
+
+    def _refuse_review(*_args, **_kwargs):
+        raise AssertionError("flag off must not call sample_bilinear_peak_hold")
+
+    monkeypatch.setattr("mpwg_radar.tiles.sample_masked_splat", _capture)
+    monkeypatch.setattr(
+        "mpwg_radar.dbz_interp_offline.sample_bilinear_peak_hold", _refuse_review
+    )
+    default_img, _echo = render_tile(frame, pal, z, x, y, sample_mode="masked-splat")
+    splat, splat_cat, _edge = captured["out"]
+    direct, direct_cat, _direct_edge = sample_masked_splat(dbz, lat, lon, qlat, qlon, cat)
+    assert np.allclose(splat, direct, rtol=0, atol=1e-5, equal_nan=True)
+    assert np.array_equal(splat_cat, direct_cat)
+    explicit_off, _echo_off = render_tile(
+        frame, pal, z, x, y, sample_mode="masked-splat", dbz_interp=""
+    )
+    assert np.array_equal(np.asarray(default_img), np.asarray(explicit_off))
+    # A slope sample inside the p3l core stays on the source cell when the flag is off.
+    qlat_s, qlon_s = _at(lat, lon, 10, 10, 0.0, 0.20)
+    held_off, _cat_off, _edge_off = sample_masked_splat(dbz, lat, lon, qlat_s, qlon_s, cat)
+    assert abs(float(held_off[0, 0]) - 68.0) < 1e-3
+
+
+def _query_for_tile(z, x, y, tile_size=512):
+    from mpwg_radar.tiles import _query_lonlat
+
+    return _query_lonlat(z, x, y, tile_size)
+
+
+def test_flag_on_keeps_peaks_and_does_not_paint_clear_air():
+    """bilinear_peak_hold on the same 68-in-30 frame used for the offline A/B."""
+    lat, lon, dbz, cat = _peak_grid()
+    frame = _frame(dbz, lat, lon, cat)
+    pal = load_palette("mpwg-rala-2026-09")
+    assert pal.version == "2026-09-rala-p3k"
+    qlat, qlon = _at(lat, lon, 10, 10, 0.0, 0.0)
+    center, center_cat = sample_bilinear_peak_hold(dbz, lat, lon, qlat, qlon, cat)
+    assert center_cat[0, 0] == CAT_VALID
+    assert abs(float(center[0, 0]) - 68.0) < 1e-3
+    half_lat, half_lon = _at(lat, lon, 10, 10, Z9_HALF_PIXEL_NS, Z9_HALF_PIXEL_EW)
+    half, _half_cat = sample_bilinear_peak_hold(dbz, lat, lon, half_lat, half_lon, cat)
+    assert abs(float(half[0, 0]) - 68.0) < 1e-3
+    clear_lat, clear_lon = _at(lat, lon, 0, 10, 0.0, 0.0)
+    clear, clear_cat = sample_bilinear_peak_hold(dbz, lat, lon, clear_lat, clear_lon, cat)
+    assert clear_cat[0, 0] == CAT_NO_ECHO
+    assert np.isnan(clear[0, 0])
+    miss_lat, miss_lon = _at(lat, lon, 5, 2, 0.0, 0.0)
+    missing, miss_cat = sample_bilinear_peak_hold(dbz, lat, lon, miss_lat, miss_lon, cat)
+    assert miss_cat[0, 0] == CAT_MISSING
+    assert np.isnan(missing[0, 0])
+
+    gx, gy = latlon_to_global_xy(float(lon[10]), float(lat[10]), 9)
+    flagged = render_tile(
+        frame,
+        pal,
+        9,
+        int(gx),
+        int(gy),
+        sample_mode="masked-splat",
+        dbz_interp=RALA_DBZ_INTERP_BILINEAR_PEAK_HOLD,
+    )
+    offline = paint_candidate_tile(frame, pal, 9, int(gx), int(gy), CANDIDATE_PEAK_HOLD)
+    assert np.array_equal(np.asarray(flagged[0]), np.asarray(offline))
+    # Clear-air pixels in that tile stay transparent. The flag does not invent echo.
+    rgba = np.asarray(flagged[0])
+    production, _echo = render_tile(frame, pal, 9, int(gx), int(gy), sample_mode="masked-splat")
+    prod = np.asarray(production)
+    clear_px = prod[..., 3] == 0
+    assert np.all(rgba[clear_px, 3] == 0)
+
+
+def test_rala_dbz_interp_env_defaults_off(monkeypatch):
+    monkeypatch.setattr("mpwg_radar.config.load_dotenv", lambda path=None: None)
+    monkeypatch.delenv("MPWG_RALA_DBZ_INTERP", raising=False)
+    monkeypatch.setenv("MPWG_PRODUCT", "rala")
+    cfg = load_config()
+    assert cfg.rala_dbz_interp == ""
+    assert cfg.product.sample_mode == "masked-splat"
+    monkeypatch.setenv("MPWG_RALA_DBZ_INTERP", "bilinear_peak_hold")
+    enabled = load_config()
+    assert enabled.rala_dbz_interp == "bilinear_peak_hold"
+    monkeypatch.setenv("MPWG_RALA_DBZ_INTERP", "gaussian")
+    try:
+        load_config()
+    except ValueError as exc:
+        assert "bilinear_peak_hold" in str(exc)
+    else:
+        raise AssertionError("unknown interp value must fail the cook config")
+
+
 def test_p3l_paint_matches_production_render_tile():
     lat, lon, dbz, cat = _peak_grid()
     frame = _frame(dbz, lat, lon, cat)
@@ -201,3 +309,34 @@ def test_p3l_paint_matches_production_render_tile():
         frame, pal, 9, int(gx), int(gy), sample_mode="masked-splat"
     )
     assert np.array_equal(np.asarray(image), np.asarray(production))
+
+
+def test_review_cook_keeps_p3l_stamp_and_marks_the_flag(tmp_path: Path):
+    from mpwg_radar.config import CookerConfig
+    from mpwg_radar.cooker import cook
+    from mpwg_radar.geo import CENTRAL_TEXAS
+
+    cfg = CookerConfig(
+        bbox=CENTRAL_TEXAS,
+        region_name="central-texas",
+        modes=["clean"],
+        min_zoom=6,
+        max_zoom=6,
+        tile_size=512,
+        skip_empty_tiles=True,
+        keep_dbz=False,
+        data_dir=tmp_path / "data",
+        output_dir=tmp_path,
+        upload=False,
+        product_id="rala",
+        rala_dbz_interp="bilinear_peak_hold",
+    )
+    cook(cfg, source="synthetic", upload=False)
+    frame = json.loads(
+        (tmp_path / "radar" / "rala" / "clean" / "latest" / "frame.json").read_text()
+    )
+    assert frame["mode_spec"]["spatial"] == "p3l"
+    assert frame["mode_spec"]["sample"] == "masked-splat"
+    assert frame["mode_spec"]["dbz_interp"] == "bilinear_peak_hold"
+    assert frame["palette"]["version"] == "2026-09-rala-p3k"
+    assert frame["max_zoom"] == 6

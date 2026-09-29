@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-29  
 **Frame:** `20260929T004243Z` (the Dickinson shot, MRMS `ReflectivityAtLowestAltitude`)  
-**Status:** offline evidence only. Production stamps stay **spatial p3l** and **palette `2026-09-rala-p3k`**. Nothing here is wired into the cooker.
+**Status:** draft review flag, default **off**. Production stamps stay **spatial p3l** and **palette `2026-09-rala-p3k`**. Do not merge. Do not deploy. Do not set the flag on the production cooker.
 
 Crops and `metrics.json` live in this directory. Reproduce with:
 
@@ -16,14 +16,53 @@ Source object: `s3://noaa-mrms-pds/CONUS/ReflectivityAtLowestAltitude_00.50/2026
 
 ## Recommendation
 
-Prototype **bilinear + peak hold** behind a default-off dev flag in a later change. Leave `SPATIAL_REVISION` at `p3l` until James signs the crops. This PR does not add that flag.
+The prototype is wired as **`MPWG_RALA_DBZ_INTERP=bilinear_peak_hold`**, default **off**. Leave it off until James signs the crops. `SPATIAL_REVISION` stays `p3l` even when the flag is on.
+
+## Review flag
+
+| | |
+| --- | --- |
+| Variable | `MPWG_RALA_DBZ_INTERP` |
+| Production value | omit it, or `off` / `p3l` / empty |
+| Review value | `bilinear_peak_hold` (`bilinear-peak-hold` is accepted) |
+| What it changes | RALA `masked-splat` tiles only. Numerical dBZ becomes bilinear, and local-maximum cells keep the p3l seam. Then the existing p3k `palette.colorize`. Category and the clear-air alpha are still the p3l splat. |
+| What it does not change | `mode_spec.spatial` stays `p3l`. Palette version stays `2026-09-rala-p3k`. Composite nearest sampling ignores the variable. Loop, zoom, and the cooker timer are untouched. |
+| How you can see a review cook | `frame.json` → `mode_spec.dbz_interp` is `bilinear_peak_hold` only while the flag is on. A normal cook does not write that key. |
+
+One-off review cook, no upload:
+
+```bash
+MPWG_RALA_DBZ_INTERP=bilinear_peak_hold MPWG_UPLOAD=false \
+  mpwg-radar cook --product rala
+```
+
+Do not put the variable in `/etc/mpwg-radar.env` or `mpwg-radar-cooker-rala.service`. A cook with the flag on still stamps `p3l`, so those tiles must not be published as production. Unset the variable before any cooker that uploads.
+
+Unknown values fail config load. A typo does not silently stay on p3l and does not enable another sampler.
+
+Judge crops for Slack or email (current p3l beside bilinear + peak hold, labeled **NOT PRODUCTION**):
+
+- `dickinson_overzoom_p3l_vs_peakhold.png`
+- `belle_fourche_overzoom_p3l_vs_peakhold.png`
+- `dickinson_core_p3l_vs_peakhold.png`
+- `magenta_probe_p3l_vs_peakhold.png`
+
+Copies sit in `docs/p3n-dbz-interp/judge/`. Regenerate with `--judge-only` (no full-CONUS benchmark):
+
+```bash
+PYTHONPATH=src python3 scripts/p3n_dbz_interp_ab.py \
+  --grib MRMS_ReflectivityAtLowestAltitude_00.50_20260929-004243.grib2.gz \
+  --judge-only --out docs/p3n-dbz-interp/judge
+```
+
+James still needs to sign those crops before anyone enables the flag on a cooker that publishes tiles.
 
 That candidate is the one that does both jobs the gate asked for:
 
 - The flat interior of ordinary cells goes away (inner-cell plateau 100% → about 16%, and the once-per-cell gradient spike drops by about 4×), on the Dickinson core and on Belle Fourche.
 - A local maximum keeps the current p3l footprint, so the worst-case z9 pixel of a 65 dBZ cell in 30 dBZ rain stays 65. Plain bilinear returns 57.4 there. Clipped bicubic returns 62.8.
 
-James still needs to look at the crops before that flag exists. The open question is the weak fringe: cell centers stay exact, and clear air stays empty, but the area-mean of ≤10 dBZ cells rises by about an extra 0.5–1.0 dBZ because the ramp starts at the center. On the Belle Fourche window, 17% of those weak cells rise more than 3 dBZ.
+The open question for that signature is the weak fringe: cell centers stay exact, and clear air stays empty, but the area-mean of ≤10 dBZ cells rises by about an extra 0.5–1.0 dBZ because the ramp starts at the center. On the Belle Fourche window, 17% of those weak cells rise more than 3 dBZ.
 
 ## Where an interpolator would insert
 
@@ -51,7 +90,7 @@ A bounded interpolator **replaces the dBZ array** that `sample_masked_splat` han
 
 ## Candidates
 
-All three are in `src/mpwg_radar/dbz_interp_offline.py`. The cooker does not import that module.
+All three are in `src/mpwg_radar/dbz_interp_offline.py`. The cooker imports `sample_bilinear_peak_hold` from that module only when `MPWG_RALA_DBZ_INTERP=bilinear_peak_hold`. With the flag omitted, `render_tile` does not call it.
 
 | Candidate | What it does to dBZ | Grid | Maxima / magenta | Cost vs p3l splat on one z9 tile |
 | --- | --- | --- | --- | --- |

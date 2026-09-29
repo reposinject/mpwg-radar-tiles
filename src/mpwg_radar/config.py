@@ -24,6 +24,32 @@ from mpwg_radar.products import (
 )
 
 
+# Review-only RALA sampler. Empty means production p3l splat. The one accepted
+# token replaces numerical dBZ before the p3k LUT and leaves category, the
+# clear-air alpha, the spatial stamp, and the palette alone.
+RALA_DBZ_INTERP_BILINEAR_PEAK_HOLD = "bilinear_peak_hold"
+_RALA_DBZ_INTERP_OFF = frozenset({"", "0", "off", "none", "false", "p3l"})
+
+
+def normalize_rala_dbz_interp(raw: Optional[str]) -> str:
+    """Map ``MPWG_RALA_DBZ_INTERP`` to ``""`` (production) or the review token.
+
+    Hyphens are accepted so ``bilinear-peak-hold`` and ``bilinear_peak_hold``
+    are the same switch. Anything else raises: a typo must not silently paint
+    production p3l during a review cook, and must not enable an unknown sampler.
+    """
+    text = (raw or "").strip().lower().replace("-", "_")
+    if text in _RALA_DBZ_INTERP_OFF:
+        return ""
+    if text == RALA_DBZ_INTERP_BILINEAR_PEAK_HOLD:
+        return RALA_DBZ_INTERP_BILINEAR_PEAK_HOLD
+    raise ValueError(
+        f"Unknown MPWG_RALA_DBZ_INTERP={raw!r}. Omit it for production p3l, "
+        f"or set {RALA_DBZ_INTERP_BILINEAR_PEAK_HOLD} for a one-off review cook. "
+        "Do not set it on the production cooker."
+    )
+
+
 def _truthy(value: Optional[str], default: bool = False) -> bool:
     if value is None:
         return default
@@ -131,6 +157,9 @@ class CookerConfig:
     r2: R2Config = field(default_factory=R2Config)
     palette_id: str = "mpwg-clean-2026-09"
     display_min_dbz: Optional[float] = None
+    # Empty: RALA tiles use the p3l splat. ``bilinear_peak_hold`` is a review
+    # sampler only. It does not change SPATIAL_REVISION or the palette.
+    rala_dbz_interp: str = ""
     user_agent: str = "mpwg-radar-tiles/1.0 (+https://github.com/reposinject/mpwg-radar-tiles)"
 
     @property
@@ -157,8 +186,10 @@ class CookerConfig:
             raise ValueError(
                 f"Unknown product {self.product_id!r}. Cookable: {list(COOKABLE_PRODUCT_IDS)}"
             )
+        self.rala_dbz_interp = normalize_rala_dbz_interp(self.rala_dbz_interp)
 
     def __post_init__(self) -> None:
+        self.rala_dbz_interp = normalize_rala_dbz_interp(self.rala_dbz_interp)
         if self.product_id == DEFAULT_PRODUCT_ID:
             return
         spec = get_product(self.product_id)
@@ -258,6 +289,9 @@ def load_config(overrides: Optional[dict] = None) -> CookerConfig:
         ),
         palette_id=palette_id,
         display_min_dbz=display_min,
+        rala_dbz_interp=normalize_rala_dbz_interp(
+            os.environ.get("MPWG_RALA_DBZ_INTERP")
+        ),
     )
     if overrides:
         for key, value in overrides.items():

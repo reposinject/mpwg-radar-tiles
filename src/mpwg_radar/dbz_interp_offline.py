@@ -1,4 +1,9 @@
-"""Offline numerical dBZ interpolation candidates for RALA. Not the cooker.
+"""Numerical dBZ interpolation candidates for RALA.
+
+The cooker calls ``sample_bilinear_peak_hold`` only when
+``MPWG_RALA_DBZ_INTERP=bilinear_peak_hold``. The default is off, and that
+path is the p3l splat. This module does not change ``SPATIAL_REVISION`` or
+the p3k palette.
 
 Production paint order (unchanged by this module):
 
@@ -22,7 +27,7 @@ measured at Dickinson (visible pitch / native cell ≈ 1).
 A bounded interpolator replaces the **dBZ** coming out of ``sample_masked_splat``
 and must run **before** ``palette.colorize``. It does not blend RGBA, does not
 change the category mask, and does not change ``SPATIAL_REVISION`` or the p3k
-palette. This module is not imported by the cooker.
+palette. With the review flag off, ``render_tile`` never calls into this module.
 
 Candidates
 ----------

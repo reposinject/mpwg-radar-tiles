@@ -138,6 +138,14 @@ def cook(
     loaded_frame: Optional[ReflectivityFrame] = None,
 ) -> Dict:
     cfg = cfg or load_config()
+    if cfg.product_id == "rala" and cfg.rala_dbz_interp:
+        log.warning(
+            "EXPERIMENTAL MPWG_RALA_DBZ_INTERP=%s. Spatial stamp stays %s and "
+            "the palette stays p3k. Category and clear-air alpha stay on the "
+            "p3l path. Do not deploy this cook. Unset the variable for production.",
+            cfg.rala_dbz_interp,
+            SPATIAL_REVISION,
+        )
     # RALA live cooks fill a rolling window of real scans. Composite, synthetic,
     # and an explicit GRIB path stay single-frame.
     if (
@@ -546,7 +554,32 @@ def _write_mode(
         skip_empty=cfg.skip_empty_tiles,
         sample_mode=product.sample_mode,
         workers=max(1, int(cfg.tile_workers)),
+        dbz_interp=cfg.rala_dbz_interp if product.sample_mode == "masked-splat" else "",
     )
+    mode_spec = {
+        "min_dbz": MODES[mode].min_dbz if product.apply_dbz_floor else None,
+        "apply_dbz_floor": product.apply_dbz_floor,
+        "despeckle": MODES[mode].despeckle and product.apply_despeckle,
+        "smooth": MODES[mode].smooth,
+        "smooth_kind": (
+            "masked-splat"
+            if product.sample_mode == "masked-splat"
+            else "edge-aware"
+            if product.edge_aware_smooth and MODES[mode].smooth and product.apply_grid_smooth
+            else "mild-3x3"
+            if MODES[mode].smooth and product.apply_grid_smooth
+            else "none"
+        ),
+        "sample": product.sample_mode,
+        "spatial": (
+            SPATIAL_REVISION if product.sample_mode == "masked-splat" else "none"
+        ),
+        "description": MODES[mode].description,
+    }
+    # Review marker only. The spatial stamp stays p3l either way, so an
+    # ordinary cook's frame.json does not grow a new key.
+    if product.sample_mode == "masked-splat" and cfg.rala_dbz_interp:
+        mode_spec["dbz_interp"] = cfg.rala_dbz_interp
     meta = {
         "id": frame.frame_id,
         "product": frame.product,
@@ -554,26 +587,7 @@ def _write_mode(
         "source": frame.source,
         "valid_time": frame.valid_time.astimezone(timezone.utc).isoformat(),
         "mode": mode,
-        "mode_spec": {
-            "min_dbz": MODES[mode].min_dbz if product.apply_dbz_floor else None,
-            "apply_dbz_floor": product.apply_dbz_floor,
-            "despeckle": MODES[mode].despeckle and product.apply_despeckle,
-            "smooth": MODES[mode].smooth,
-            "smooth_kind": (
-                "masked-splat"
-                if product.sample_mode == "masked-splat"
-                else "edge-aware"
-                if product.edge_aware_smooth and MODES[mode].smooth and product.apply_grid_smooth
-                else "mild-3x3"
-                if MODES[mode].smooth and product.apply_grid_smooth
-                else "none"
-            ),
-            "sample": product.sample_mode,
-            "spatial": (
-                SPATIAL_REVISION if product.sample_mode == "masked-splat" else "none"
-            ),
-            "description": MODES[mode].description,
-        },
+        "mode_spec": mode_spec,
         "palette": palette.as_dict(),
         "region": cfg.region_name,
         "bbox": cfg.bbox.as_dict(),

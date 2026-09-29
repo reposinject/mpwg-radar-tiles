@@ -4,6 +4,9 @@
 Does not cook, upload, or change production stamps. Reads one MRMS RALA
 GRIB and writes crops plus metrics under --out.
 
+``--judge-only`` writes four labeled side-by-side PNGs (current p3l vs
+bilinear + peak hold) and skips the metric sweep.
+
 Example:
   python3 scripts/p3n_dbz_interp_ab.py \\
     --grib data/MRMS_ReflectivityAtLowestAltitude_00.50_20260929-004243.grib2.gz \\
@@ -66,8 +69,9 @@ METHOD_TITLE = {
 }
 
 
-def _font(size: int) -> ImageFont.ImageFont:
-    path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+def _font(size: int, bold: bool = False) -> ImageFont.ImageFont:
+    name = "DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf"
+    path = f"/usr/share/fonts/truetype/dejavu/{name}"
     try:
         return ImageFont.truetype(path, size)
     except OSError:
@@ -672,6 +676,142 @@ def _probe_pixel_values(frame, peak_mask, peak_ji, shoulder_ji) -> dict:
     return out
 
 
+def _panel_rgb(rgba: np.ndarray, min_width: int) -> Image.Image:
+    """Composite clear air on the dark map background and enlarge small fields."""
+    image = Image.fromarray(_on_dark(rgba)).convert("RGB")
+    if image.width < min_width:
+        scale = max(2, int(round(min_width / image.width)))
+        image = image.resize(
+            (image.width * scale, image.height * scale), Image.Resampling.NEAREST
+        )
+    return image
+
+
+def _judge_pair(
+    left_rgba: np.ndarray,
+    right_rgba: np.ndarray,
+    *,
+    site: str,
+    frame_id: str,
+    note: str,
+    min_width: int = 640,
+) -> Image.Image:
+    """Side-by-side CURRENT p3l vs REVIEW bilinear+peak-hold, labeled for email."""
+    left = _panel_rgb(left_rgba, min_width)
+    right = _panel_rgb(right_rgba, min_width)
+    panel_h = max(left.height, right.height)
+    panel_w = max(left.width, right.width)
+    gap = 16
+    margin = 20
+    banner_h = 78
+    label_h = 64
+    footer_h = 78
+    width = margin * 2 + panel_w * 2 + gap
+    height = banner_h + label_h + panel_h + footer_h
+    canvas = Image.new("RGB", (width, height), (8, 12, 20))
+    draw = ImageDraw.Draw(canvas)
+    amber = (255, 196, 64)
+    white = (255, 255, 255)
+    muted = (176, 196, 214)
+    draw.text((margin, 14), site, fill=white, font=_font(26, bold=True))
+    draw.text(
+        (margin, 46),
+        f"{frame_id}    NOT PRODUCTION    flag default OFF",
+        fill=amber,
+        font=_font(16, bold=True),
+    )
+    columns = (
+        (left, "CURRENT  ·  p3l", "flag off  ·  production splat"),
+        (right, "REVIEW  ·  bilinear + peak hold", "MPWG_RALA_DBZ_INTERP=bilinear_peak_hold"),
+    )
+    for index, (panel, title, subtitle) in enumerate(columns):
+        x = margin + index * (panel_w + gap)
+        draw.text((x, banner_h + 4), title, fill=white, font=_font(20, bold=True))
+        draw.text((x, banner_h + 32), subtitle, fill=muted, font=_font(14))
+        padded = Image.new("RGB", (panel_w, panel_h), (8, 12, 20))
+        padded.paste(panel, (0, 0))
+        canvas.paste(padded, (x, banner_h + label_h))
+    draw.text((margin, height - 62), note, fill=muted, font=_font(14))
+    draw.text(
+        (margin, height - 36),
+        "Spatial stamp stays p3l. Palette stays p3k. Do not merge. Do not deploy.",
+        fill=amber,
+        font=_font(15, bold=True),
+    )
+    return canvas
+
+
+def write_judge_crops(frame, palette, peak_mask, probe, probe_mask, out_dir: Path) -> None:
+    """Four labeled pairs: Dickinson, Belle Fourche, core field, magenta probe."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    frame_id = frame.frame_id or "unknown-frame"
+    jobs = (
+        (
+            "dickinson_overzoom_p3l_vs_peakhold.png",
+            "Dickinson ND  ·  Mapbox-like overzoom",
+            "Real z9 tiles, then the same ~2.73× overzoom as the p3n measurement.",
+            lambda name, mask: render_overzoom(frame, palette, DICKINSON, name, mask),
+            peak_mask,
+            720,
+        ),
+        (
+            "belle_fourche_overzoom_p3l_vs_peakhold.png",
+            "Belle Fourche  ·  Mapbox-like overzoom",
+            "Weak-fringe window. Real z9 tiles, same overzoom.",
+            lambda name, mask: render_overzoom(frame, palette, BELLE, name, mask),
+            peak_mask,
+            720,
+        ),
+        (
+            "dickinson_core_p3l_vs_peakhold.png",
+            "Dickinson core  ·  8 samples per native cell",
+            "Field view of the core. No RGB blur. Clear air stays empty.",
+            lambda name, mask: render_fine(
+                frame, palette, DICKINSON_CORE, name, mask, samples_per_cell=8
+            ),
+            peak_mask,
+            900,
+        ),
+        (
+            "magenta_probe_p3l_vs_peakhold.png",
+            "Magenta probe  ·  Dickinson core overzoom",
+            "SYNTHETIC. 68 planted on the 58 cell, 66 on the south neighbor. Not observed.",
+            lambda name, mask: render_overzoom(probe, palette, DICKINSON_CORE, name, mask),
+            probe_mask,
+            640,
+        ),
+    )
+    for filename, site, note, render, mask, min_width in jobs:
+        print("judge", filename)
+        pair = _judge_pair(
+            render(PRODUCTION_NAME, mask),
+            render(CANDIDATE_PEAK_HOLD, mask),
+            site=site,
+            frame_id=frame_id,
+            note=note,
+            min_width=min_width,
+        )
+        pair.save(out_dir / filename)
+        print("wrote", out_dir / filename, pair.size)
+
+
+def _run_judge_only(grib: Path, out_dir: Path) -> None:
+    palette = load_palette("mpwg-rala-2026-09")
+    if palette.version != "2026-09-rala-p3k":
+        raise SystemExit(f"unexpected palette {palette.version}")
+    if SPATIAL_REVISION != "p3l":
+        raise SystemExit(f"unexpected spatial stamp {SPATIAL_REVISION}")
+    region = BBox(-104.10, 44.40, -102.30, 47.35, "nd-sd")
+    print("decoding", grib)
+    decoded = decode_grib2(grib, bbox=region, product="ReflectivityAtLowestAltitude")
+    frame = _rala_clean(decoded)
+    print(f"frame {frame.frame_id} grid {frame.dbz.shape}")
+    peak_mask = local_peak_mask(frame.dbz, frame.category)
+    probe, _planted, _peak_ji, _shoulder_ji = _plant_probe(frame)
+    probe_mask = local_peak_mask(probe.dbz, probe.category)
+    write_judge_crops(frame, palette, peak_mask, probe, probe_mask, out_dir)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--grib", type=Path, required=True)
@@ -681,8 +821,16 @@ def main() -> None:
         action="store_true",
         help="Time the regional crop instead of the full CONUS grid",
     )
+    parser.add_argument(
+        "--judge-only",
+        action="store_true",
+        help="Write the four labeled p3l vs peak-hold crops and skip metrics",
+    )
     args = parser.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
+    if args.judge_only:
+        _run_judge_only(args.grib, args.out)
+        return
 
     palette = load_palette("mpwg-rala-2026-09")
     if palette.version != "2026-09-rala-p3k":

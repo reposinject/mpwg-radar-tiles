@@ -245,6 +245,7 @@ def test_rala_cook_writes_prefixed_tiles_and_keeps_composite(tmp_path: Path):
     assert rala_frame["mode_spec"]["sample"] == "masked-splat"
     assert rala_frame["mode_spec"]["smooth_kind"] == "masked-splat"
     assert rala_frame["mode_spec"]["spatial"] == "p3l"
+    assert "dbz_interp" not in rala_frame["mode_spec"]
     assert rala_frame["palette"]["version"] == "2026-09-rala-p3k"
     assert rala_frame["min_zoom"] == 6
     assert rala_frame["max_zoom"] == 6

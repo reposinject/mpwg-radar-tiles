@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-29  
 **Frame:** `20260929T004243Z` (the Dickinson shot, MRMS `ReflectivityAtLowestAltitude`)  
-**Status:** draft review flag, default **off**. Production stamps stay **spatial p3l** and **palette `2026-09-rala-p3k`**. Do not merge. Do not deploy. Do not set the flag on the production cooker.
+**Status:** draft. Direction **keep**, acceptance **not yet**. Default flag **off** = production p3l. Stamps stay **spatial p3l** and **palette `2026-09-rala-p3k`**. Do not merge. Do not deploy. Do not set a review value on the production cooker.
 
 Crops and `metrics.json` live in this directory. Reproduce with:
 
@@ -14,25 +14,128 @@ PYTHONPATH=src python3 scripts/p3n_dbz_interp_ab.py \
 
 Source object: `s3://noaa-mrms-pds/CONUS/ReflectivityAtLowestAltitude_00.50/20260929/MRMS_ReflectivityAtLowestAltitude_00.50_20260929-004243.grib2.gz`
 
+## James review — direction keep, acceptance not yet
+
+Medium zoom looks much better (the Lego is largely gone). Tight overzoom looks too soft. Generic sharpening and unsharp mask are rejected. Peak-hold stays. p3k stays frozen. The loop stays locked. Magenta stays ≥65. NO-ECHO stays hard. No z10. Do not revert the review path to p3l. Do not merge. Do not deploy. Production remains flag-off = p3l.
+
+Candidate A stays `bilinear_peak_hold`. Candidate B is `tight_peak_hold`: the same peak-hold, a shorter numerical ramp before `palette.colorize`. There is no Candidate C. A third width either sits on A or on the p3l shelf.
+
+### Transition width on this frame
+
+10–90% of the dBZ step from one cell center to the next orthogonal center. Native nearest-cell is a step at the shared face, so its blend width is **0.00 cell**. The cell itself is still 1.00 source cell of constant color.
+
+Ordinary pairs: both cells valid, |Δ| ≥ 8 dBZ, neither cell a local maximum (so the hold does not fire). Dickinson n=145, Belle Fourche n=214. Every method’s p10 and p90 sit within 0.01 cell of the median.
+
+| Method | 10–90% width | Dickinson ordinary | Belle Fourche ordinary | Peak-to-shoulder (steepest 12) |
+| --- | --- | --- | --- | --- |
+| Native cell | 0.00 cell | 0.00 | 0.00 | 0.00 |
+| p3l seam | 0.31 cell | 0.312 | 0.312 | 0.312 |
+| A bilinear + peak hold | 0.80 cell | 0.800 | 0.800 | 0.555 |
+| B tight + peak hold | 0.50 cell | 0.500 | 0.500 | 0.405 |
+
+Peak-to-shoulder is shorter than a pure ramp because the hot cell keeps the p3l core. B is still shorter than A there (0.405 vs 0.555), and the shoulder stays on its own real dBZ instead of being washed toward the peak.
+
+Screen pixels at Dickinson (3.64 CSS px per cell E–W and 5.33 N–S at map z9; the published 3.65 / 5.32 pitch). The tight crops are native z9 tiles scaled 8×, which is map zoom 12. One image pixel in those PNGs is 2 CSS px (the 512px tile in a 256px CSS slot, DPR 2).
+
+| Method | z9 E–W CSS | z10.45 E–W CSS | z12 E–W CSS | z12 N–S CSS | z12 E–W image px | z13 E–W CSS |
+| --- | --- | --- | --- | --- | --- | --- |
+| Native step | 0 | 0 | 0 | 0 | 0 | 0 |
+| p3l | 1.1 | 3.1 | 9.1 | 13.4 | 18 | 18.3 |
+| A | 2.9 | 8.0 | 23.3 | 34.1 | 47 | 46.6 |
+| B | 1.8 | 5.0 | 14.6 | 21.3 | 29 | 29.1 |
+
+The hypothesis holds. A’s ramp is the full center-to-center span (0.80 cell of the 10–90% rise). Once a cell is 29 CSS px wide at map z12, that ramp is 23 CSS px E–W and 34 CSS px N–S. That is the softness. B cuts the same rise to 0.50 cell: 15 CSS px E–W and 21 N–S at z12.
+
+Examples (ordinary, neither cell held):
+
+| Site | From → to | Where | A | B |
+| --- | --- | --- | --- | --- |
+| Dickinson | 14.0 → 47.5 | 46.985°N, 102.875°W, N–S | 0.797 cell | 0.497 cell |
+| Belle Fourche | 42.0 → 9.0 | 44.515°N, 103.745°W, N–S | 0.800 cell | 0.500 cell |
+
+Full pairs: `docs/p3n-dbz-interp/judge/transition_widths.json`.
+
+### What B does
+
+B uses the same valid corners as masked bilinear and the same peak-hold as A. The bilinear fraction is remapped with power 2 (`t² / (t² + (1−t)²)`). It is 0 at a cell center, 0.5 on the shared face, and 1 at the next center. Neighbor weight grows more slowly inside the cell, so the 10–90% band is 0.50 cell instead of 0.80. The sample is still a convex combination of those corners: no overshoot, no new dBZ, no RGB blend, no unsharp mask. Category, clear-air, NO-ECHO, and alpha stay on the p3l splat.
+
+On a 68-in-30 peak the hot cell is held (worst-case z9 half-pixel stays 68, and a 65 stays 65). The ordinary neighbor 0.20 cell in from its own center is about 32 dBZ under B and about 38 dBZ under A. The shared face stays between 30 and 68, so the peak is the top of the real gradient, not a spike sitting in a washed field.
+
+### Scale-aware footprint
+
+Not implemented. The screen width of a cell-fraction ramp is `fraction × px_per_cell(z9) × 2^(map_zoom − 9)`. It grows with overzoom because Mapbox magnifies one z9 raster. Holding the medium-zoom bilinear width (8.0 CSS px E–W at z10.45) when the user is at map z12 would require a **0.27-cell** ramp. That is the p3l shelf, which reads as blocks at the zoom where A already looks right. A per-zoom kernel would also mean extra native zooms. No z10. B is the fixed 0.625× width (0.50/0.80) at every zoom, which is the knob these crops are for.
+
+### Acceptance checklist
+
+| Item | State |
+| --- | --- |
+| Direction is bilinear + peak hold, not a return to p3l | kept |
+| A remains available | `bilinear_peak_hold` |
+| B is narrower at tight zoom and still hides the hard square | in these crops; **James has not signed it** |
+| No unsharp mask, no RGB blur, no Gaussian, no fake sharpen | held |
+| Peak-hold, magenta ≥65 on the harsh half-pixel, NO-ECHO hard | held |
+| p3k frozen, loop locked, native max zoom 9 | held |
+| Production cooker | flag omitted = p3l. Do not merge. Do not deploy. |
+
+### Review flags
+
+| | |
+| --- | --- |
+| Variable | `MPWG_RALA_DBZ_INTERP` |
+| Production | omit it, or `off` / `p3l` / empty |
+| A | `bilinear_peak_hold` |
+| B | `tight_peak_hold` |
+| What changes | RALA `masked-splat` numerical dBZ only, before p3k `palette.colorize`. Local maxima keep the p3l seam. |
+| What stays | Category, NO-ECHO, clear-air alpha, `mode_spec.spatial` = `p3l`, palette `2026-09-rala-p3k`, zoom, loop. Composite ignores the variable. |
+
+One-off review cooks, no upload:
+
+```bash
+MPWG_RALA_DBZ_INTERP=bilinear_peak_hold MPWG_UPLOAD=false \
+  mpwg-radar cook --product rala
+
+MPWG_RALA_DBZ_INTERP=tight_peak_hold MPWG_UPLOAD=false \
+  mpwg-radar cook --product rala
+```
+
+Do not put either value in `/etc/mpwg-radar.env` or `mpwg-radar-cooker-rala.service`. A flagged cook still stamps `p3l`, so those tiles must not be published.
+
+Tight A vs B crops (same frame, map-zoom-12 overzoom of the z9 tiles, labeled **NOT PRODUCTION**):
+
+- `judge/dickinson_tight_z12_A_vs_B.png`
+- `judge/belle_fourche_tight_z12_A_vs_B.png`
+- `judge/dickinson_core_transition_tight_z12_A_vs_B.png`
+
+Regenerate the measurement and these three crops with:
+
+```bash
+PYTHONPATH=src python3 scripts/p3n_dbz_interp_ab.py \
+  --grib MRMS_ReflectivityAtLowestAltitude_00.50_20260929-004243.grib2.gz \
+  --tight-review --out docs/p3n-dbz-interp/judge
+```
+
 ## Recommendation
 
-The prototype is wired as **`MPWG_RALA_DBZ_INTERP=bilinear_peak_hold`**, default **off**. Leave it off until James signs the crops. `SPATIAL_REVISION` stays `p3l` even when the flag is on.
+Candidate A is **`MPWG_RALA_DBZ_INTERP=bilinear_peak_hold`**. Candidate B is **`tight_peak_hold`**. Default **off**. Leave both off until James signs a tight-zoom crop. `SPATIAL_REVISION` stays `p3l` even when a flag is on.
 
 ## Review flag
+
+The table above is the current switch. The notes below are the first A/B against p3l.
 
 | | |
 | --- | --- |
 | Variable | `MPWG_RALA_DBZ_INTERP` |
 | Production value | omit it, or `off` / `p3l` / empty |
-| Review value | `bilinear_peak_hold` (`bilinear-peak-hold` is accepted) |
-| What it changes | RALA `masked-splat` tiles only. Numerical dBZ becomes bilinear, and local-maximum cells keep the p3l seam. Then the existing p3k `palette.colorize`. Category and the clear-air alpha are still the p3l splat. |
+| A | `bilinear_peak_hold` |
+| B | `tight_peak_hold` |
+| What it changes | RALA `masked-splat` tiles only. Numerical dBZ is replaced before the p3k LUT. Local-maximum cells keep the p3l seam. Category and the clear-air alpha stay on the p3l splat. |
 | What it does not change | `mode_spec.spatial` stays `p3l`. Palette version stays `2026-09-rala-p3k`. Composite nearest sampling ignores the variable. Loop, zoom, and the cooker timer are untouched. |
-| How you can see a review cook | `frame.json` → `mode_spec.dbz_interp` is `bilinear_peak_hold` only while the flag is on. A normal cook does not write that key. |
+| How you can see a review cook | `frame.json` → `mode_spec.dbz_interp` is the flag token only while the flag is on. A normal cook does not write that key. |
 
 One-off review cook, no upload:
 
 ```bash
-MPWG_RALA_DBZ_INTERP=bilinear_peak_hold MPWG_UPLOAD=false \
+MPWG_RALA_DBZ_INTERP=tight_peak_hold MPWG_UPLOAD=false \
   mpwg-radar cook --product rala
 ```
 
@@ -90,13 +193,14 @@ A bounded interpolator **replaces the dBZ array** that `sample_masked_splat` han
 
 ## Candidates
 
-All three are in `src/mpwg_radar/dbz_interp_offline.py`. The cooker imports `sample_bilinear_peak_hold` from that module only when `MPWG_RALA_DBZ_INTERP=bilinear_peak_hold`. With the flag omitted, `render_tile` does not call it.
+These live in `src/mpwg_radar/dbz_interp_offline.py`. The cooker calls that module only for `MPWG_RALA_DBZ_INTERP=bilinear_peak_hold` (A) or `tight_peak_hold` (B). With the flag omitted, `render_tile` does not call it.
 
 | Candidate | What it does to dBZ | Grid | Maxima / magenta | Cost vs p3l splat on one z9 tile |
 | --- | --- | --- | --- | --- |
 | **bilinear-masked** | Existing `sample_masked_bilinear`. Exact at the cell center. Invalid corners are left out of the average. | Inner plateau breaks. Value ramps across the cell. | Worst-case z9 pixel (0.137 cell E–W and 0.094 cell N–S off the center, Dickinson pixel size) of a 68-in-30 peak returns **59.7**. A 65-in-30 peak returns **57.4**. | 17 ms, **1.8×** the 9.3 ms splat |
 | **bicubic-clipped** | Catmull-Rom on the 4×4 when every tap is valid echo; otherwise bilinear. Clipped to the min/max of the 2×2 cell centers, so the cubic cannot invent a hotter peak. Exact at the cell center. | Inner plateau breaks. The 1-cell gradient spike matches bilinear. | Same worst-case pixel: 68-in-30 returns **65.6** (still magenta, thin margin). 65-in-30 returns **62.8** (under the lock). | 77 ms, **8.3×** |
-| **bilinear-peak-hold** | Bilinear on ordinary cells. Where the nearest cell is a plateau-aware local maximum (dBZ ≥ every 8-neighbor), keep the p3l dBZ, core and seam included. | Inner plateau breaks on the field that is not a local max. Real Dickinson/Belle cores keep today's footprint. | Worst-case pixel stays **68** and **65**. On this frame, visible-peak z9 loss is **0**. | 29 ms unfused (**3.1×**), because this offline build runs splat and bilinear and picks. A fused pass would share one neighborhood gather. Paint path: 45 ms vs 15 ms for p3l paint (**2.9×**). |
+| **bilinear-peak-hold** (A) | Bilinear on ordinary cells. Where the nearest cell is a plateau-aware local maximum (dBZ ≥ every 8-neighbor), keep the p3l dBZ, core and seam included. 10–90% width **0.80 cell**. | Inner plateau breaks on the field that is not a local max. Real Dickinson/Belle cores keep today's footprint. | Worst-case pixel stays **68** and **65**. On this frame, visible-peak z9 loss is **0**. | 29 ms unfused (**3.1×**), because this offline build runs splat and bilinear and picks. A fused pass would share one neighborhood gather. Paint path: 45 ms vs 15 ms for p3l paint (**2.9×**). |
+| **tight-peak-hold** (B) | Same corners and the same peak-hold. The bilinear fraction uses power 2, so the 10–90% width is **0.50 cell**. Still a convex combination. | Shorter ramp than A. The interior is not the p3l shelf (that shelf is 0.31 cell of the rise, with a hard core). | Same hold as A: worst-case pixel stays **68** and **65**. The neighbor interior stays closer to its own dBZ than A does. | Same unfused gather as A, plus one power on the fraction. |
 
 A limited-radius Gaussian is not in the set. It is not interpolating, so the cell center becomes an average of its neighbors. That is the retired p3h result: a 68 dBZ cell in 30 dBZ rain came back at 62.6.
 

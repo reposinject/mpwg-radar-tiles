@@ -28,13 +28,17 @@ from mpwg_radar.dbz_interp_offline import (
     CANDIDATE_BICUBIC,
     CANDIDATE_BILINEAR,
     CANDIDATE_PEAK_HOLD,
+    CANDIDATE_TIGHT,
     PRODUCTION_NAME,
     Z9_HALF_PIXEL_EW,
     Z9_HALF_PIXEL_NS,
+    Z9_PX_PER_CELL_EW,
+    Z9_PX_PER_CELL_NS,
     local_peak_mask,
     paint_candidate_tile,
     sample_and_paint,
     sample_dbz_candidate,
+    width_10_90,
 )
 from mpwg_radar.geo import BBox, latlon_to_global_xy, tiles_for_bbox
 from mpwg_radar.grib import ReflectivityFrame, decode_grib2
@@ -48,6 +52,10 @@ from mpwg_radar.tiles import SPATIAL_REVISION, sample_masked_splat, sample_neare
 COMPARE_ZOOM = 10.45
 TILE_ZOOM = 9
 OVERZOOM = 2 ** (COMPARE_ZOOM - TILE_ZOOM)
+# Tight review zoom. Still native z9 tiles, magnified the way Mapbox does
+# past max_zoom. Not a z10/z12 cook.
+TIGHT_ZOOM = 12.0
+TIGHT_OVERZOOM = 2 ** (TIGHT_ZOOM - TILE_ZOOM)
 
 DICKINSON = BBox(-103.15, 46.70, -102.40, 47.25, "dickinson")
 DICKINSON_CORE = BBox(-102.98, 46.86, -102.72, 47.06, "dickinson-core")
@@ -135,7 +143,7 @@ def _sample(frame, name, qlat, qlon, peak_mask):
             frame.dbz, frame.lat, frame.lon, qlat, qlon, frame.category
         )
     else:
-        mask = peak_mask if name == CANDIDATE_PEAK_HOLD else None
+        mask = peak_mask if _holds_peaks(name) else None
         sampled, cat = sample_dbz_candidate(
             name,
             frame.dbz,
@@ -485,7 +493,13 @@ def _on_dark(rgba: np.ndarray) -> np.ndarray:
     return out
 
 
-def render_overzoom(frame, palette, bbox: BBox, name: str, peak_mask) -> np.ndarray:
+def _holds_peaks(name: str) -> bool:
+    return name in (CANDIDATE_PEAK_HOLD, CANDIDATE_TIGHT)
+
+
+def render_overzoom(
+    frame, palette, bbox: BBox, name: str, peak_mask, overzoom: float = OVERZOOM
+) -> np.ndarray:
     tiles = tiles_for_bbox(bbox, TILE_ZOOM)
     xs = [item[1] for item in tiles]
     ys = [item[2] for item in tiles]
@@ -501,7 +515,7 @@ def render_overzoom(frame, palette, bbox: BBox, name: str, peak_mask) -> np.ndar
             x,
             y,
             name,
-            peak_mask=peak_mask if name == CANDIDATE_PEAK_HOLD else None,
+            peak_mask=peak_mask if _holds_peaks(name) else None,
         )
         arr = np.asarray(image)
         r0 = (y - ymin) * tile
@@ -516,11 +530,13 @@ def render_overzoom(frame, palette, bbox: BBox, name: str, peak_mask) -> np.ndar
     r1 = int(np.clip(round((y1 - ymin) * tile), r0 + 1, mosaic.shape[0]))
     cropped = mosaic[r0:r1, c0:c1]
     im = Image.fromarray(cropped)
-    size = (
-        max(1, int(round(im.width * OVERZOOM))),
-        max(1, int(round(im.height * OVERZOOM))),
+    up = im.resize(
+        (
+            max(1, int(round(im.width * overzoom))),
+            max(1, int(round(im.height * overzoom))),
+        ),
+        Image.BILINEAR,
     )
-    up = im.resize(size, Image.BILINEAR)
     return np.asarray(up)
 
 
@@ -551,7 +567,7 @@ def render_fine(frame, palette, bbox: BBox, name: str, peak_mask, samples_per_ce
         qlat,
         qlon,
         name,
-        peak_mask=peak_mask if name == CANDIDATE_PEAK_HOLD else None,
+        peak_mask=peak_mask if _holds_peaks(name) else None,
     )
     return rgba
 
@@ -695,8 +711,12 @@ def _judge_pair(
     frame_id: str,
     note: str,
     min_width: int = 640,
+    left_title: str = "CURRENT  ·  p3l",
+    left_sub: str = "flag off  ·  production splat",
+    right_title: str = "REVIEW  ·  bilinear + peak hold",
+    right_sub: str = "MPWG_RALA_DBZ_INTERP=bilinear_peak_hold",
 ) -> Image.Image:
-    """Side-by-side CURRENT p3l vs REVIEW bilinear+peak-hold, labeled for email."""
+    """Side-by-side labeled pair for email. Default columns are p3l vs A."""
     left = _panel_rgb(left_rgba, min_width)
     right = _panel_rgb(right_rgba, min_width)
     panel_h = max(left.height, right.height)
@@ -721,8 +741,8 @@ def _judge_pair(
         font=_font(16, bold=True),
     )
     columns = (
-        (left, "CURRENT  ·  p3l", "flag off  ·  production splat"),
-        (right, "REVIEW  ·  bilinear + peak hold", "MPWG_RALA_DBZ_INTERP=bilinear_peak_hold"),
+        (left, left_title, left_sub),
+        (right, right_title, right_sub),
     )
     for index, (panel, title, subtitle) in enumerate(columns):
         x = margin + index * (panel_w + gap)
@@ -795,6 +815,259 @@ def write_judge_crops(frame, palette, peak_mask, probe, probe_mask, out_dir: Pat
         print("wrote", out_dir / filename, pair.size)
 
 
+def _css_px_per_cell(lat: float, lon: float) -> tuple[float, float]:
+    """CSS pixels per 0.01° cell at map zoom 9. A z9 tile is 256 CSS px."""
+    x0, y0 = latlon_to_global_xy(lon, lat, TILE_ZOOM)
+    x1, _y = latlon_to_global_xy(lon + 0.01, lat, TILE_ZOOM)
+    _x, y1 = latlon_to_global_xy(lon, lat + 0.01, TILE_ZOOM)
+    return abs(x1 - x0) * 256.0, abs(y1 - y0) * 256.0
+
+
+def _line_dbz(frame, j0, i0, j1, i1, name, peak_mask, n=401):
+    qlat = np.linspace(float(frame.lat[j0]), float(frame.lat[j1]), n)
+    qlon = np.linspace(float(frame.lon[i0]), float(frame.lon[i1]), n)
+    if name == "nearest":
+        sampled = sample_nearest_many(
+            frame.lat,
+            frame.lon,
+            qlat[:, None],
+            qlon[:, None],
+            frame.dbz,
+        )[0]
+        return np.asarray(sampled, dtype=np.float64).reshape(-1)
+    sampled, _cat = _sample(frame, name, qlat, qlon, peak_mask)
+    return np.asarray(sampled, dtype=np.float64).reshape(-1)
+
+
+def _summarize_widths(widths: list[float]) -> dict:
+    arr = np.asarray(widths, dtype=np.float64)
+    arr = arr[np.isfinite(arr)]
+    if arr.size == 0:
+        return {"n": 0}
+    return {
+        "n": int(arr.size),
+        "median_cells": round(float(np.median(arr)), 3),
+        "p10_cells": round(float(np.percentile(arr, 10)), 3),
+        "p90_cells": round(float(np.percentile(arr, 90)), 3),
+    }
+
+
+def measure_transitions(frame, peak_mask) -> dict:
+    """10–90% width of real orthogonal steps, in native cells.
+
+    Ordinary pairs are neither cell a local maximum, so A is plain bilinear
+    and B is the tighter ramp. Peak-shoulder pairs keep p3l on the hot cell.
+    Native nearest-cell width is the source step (about one sample).
+    """
+    valid = frame.category == CAT_VALID
+    dbz = frame.dbz
+    sites = {
+        "dickinson": DICKINSON,
+        "belle-fourche": BELLE,
+    }
+    methods = ("nearest", PRODUCTION_NAME, CANDIDATE_PEAK_HOLD, CANDIDATE_TIGHT)
+    report = {"sites": {}, "screen_px": {}, "scale_aware": {}}
+    examples = []
+    for site_name, bbox in sites.items():
+        buckets = {
+            "ordinary": {name: [] for name in methods},
+            "peak_shoulder": {name: [] for name in methods},
+        }
+        height, width = dbz.shape
+        candidates = []
+        for j in range(1, height - 1):
+            for i in range(1, width - 1):
+                here = (j, i)
+                for j2, i2, axis in ((j, i + 1, "ew"), (j + 1, i, "ns")):
+                    if i2 >= width or j2 >= height:
+                        continue
+                    if not (valid[j, i] and valid[j2, i2]):
+                        continue
+                    if not (
+                        bbox.south <= float(frame.lat[j]) <= bbox.north
+                        and bbox.west <= float(frame.lon[i]) <= bbox.east
+                        and bbox.south <= float(frame.lat[j2]) <= bbox.north
+                        and bbox.west <= float(frame.lon[i2]) <= bbox.east
+                    ):
+                        continue
+                    delta = abs(float(dbz[j2, i2]) - float(dbz[j, i]))
+                    if delta < 8.0:
+                        continue
+                    hot = bool(peak_mask[j, i] or peak_mask[j2, i2])
+                    kind = "peak_shoulder" if hot else "ordinary"
+                    candidates.append((delta, kind, axis, j, i, j2, i2))
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        # Measure every ordinary pair and the steepest peak-shoulder pairs.
+        # Ordinary counts on this frame are a few dozen, not thousands.
+        measured = []
+        peak_budget = 12
+        for delta, kind, axis, j, i, j2, i2 in candidates:
+            if kind == "peak_shoulder":
+                if peak_budget <= 0:
+                    continue
+                peak_budget -= 1
+            measured.append((delta, kind, axis, j, i, j2, i2))
+        for delta, kind, axis, j, i, j2, i2 in measured:
+            row = {
+                "site": site_name,
+                "kind": kind,
+                "axis": axis,
+                "delta_dbz": round(delta, 2),
+                "a_dbz": round(float(dbz[j, i]), 2),
+                "b_dbz": round(float(dbz[j2, i2]), 2),
+                "a_lat": round(float(frame.lat[j]), 3),
+                "a_lon": round(float(frame.lon[i]), 3),
+                "widths_cells": {},
+            }
+            for name in methods:
+                w = width_10_90(_line_dbz(frame, j, i, j2, i2, name, peak_mask))
+                buckets[kind][name].append(w)
+                row["widths_cells"][name] = None if not np.isfinite(w) else round(w, 3)
+            n_ord = sum(
+                1 for e in examples if e["site"] == site_name and e["kind"] == "ordinary"
+            )
+            n_peak = sum(
+                1
+                for e in examples
+                if e["site"] == site_name and e["kind"] == "peak_shoulder"
+            )
+            if kind == "ordinary" and n_ord < 3:
+                examples.append(row)
+            elif kind == "peak_shoulder" and n_peak < 2:
+                examples.append(row)
+        report["sites"][site_name] = {
+            kind: {name: _summarize_widths(vals) for name, vals in names.items()}
+            for kind, names in buckets.items()
+        }
+    report["examples"] = examples
+    # Screen pixels use the Dickinson CSS pitch from the p3n measurement,
+    # checked against the mercator scale at the Dickinson peak.
+    ew, ns = _css_px_per_cell(46.945, -102.855)
+    belle_ew, belle_ns = _css_px_per_cell(44.625, -103.715)
+    zooms = {
+        "z9": 1.0,
+        "z10.45": 2 ** (COMPARE_ZOOM - TILE_ZOOM),
+        "z12": TIGHT_OVERZOOM,
+        "z13": 2 ** (13 - TILE_ZOOM),
+    }
+    analytical = {
+        "nearest": 0.0,
+        "p3l": 0.314,
+        CANDIDATE_PEAK_HOLD: 0.80,
+        CANDIDATE_TIGHT: 0.50,
+    }
+    screen = {}
+    for name, cells in analytical.items():
+        screen[name] = {}
+        for zoom_name, factor in zooms.items():
+            screen[name][zoom_name] = {
+                "ew_css_px": round(cells * ew * factor, 1),
+                "ns_css_px": round(cells * ns * factor, 1),
+                "ew_image_px_at_this_zoom": round(cells * ew * factor * 2.0, 1),
+            }
+    report["screen_px"] = {
+        "css_px_per_cell_z9_dickinson": {"ew": round(ew, 3), "ns": round(ns, 3)},
+        "css_px_per_cell_z9_belle": {"ew": round(belle_ew, 3), "ns": round(belle_ns, 3)},
+        "published_dickinson_css_px_z9": {"ew": Z9_PX_PER_CELL_EW, "ns": Z9_PX_PER_CELL_NS},
+        "note": (
+            "CSS px is a 256px slippy tile. The cooker writes 512px for that "
+            "same tile, so a tight-crop image pixel is 2 CSS px (DPR 2). "
+            "Widths below use the analytical 1D 10–90% cell fraction."
+        ),
+        "analytical_10_90_cells": analytical,
+        "css_px": screen,
+    }
+    medium = 0.80 * ew * zooms["z10.45"]
+    tight_cell = 0.80
+    needed = medium / (ew * zooms["z12"])
+    report["scale_aware"] = {
+        "bilinear_10_90_css_px_ew_z10_45": round(medium, 1),
+        "bilinear_10_90_css_px_ew_z12": round(0.80 * ew * zooms["z12"], 1),
+        "tight_10_90_css_px_ew_z12": round(0.50 * ew * zooms["z12"], 1),
+        "cell_fraction_to_keep_z10_45_width_at_z12": round(needed, 3),
+        "implemented": False,
+        "reason": (
+            "Screen-pixel width scales with 2^(map_zoom-9) because the z9 "
+            "raster is magnified linearly. Matching the medium-zoom bilinear "
+            f"width ({medium:.1f} CSS px) at map z12 would need a "
+            f"{needed:.2f}-cell ramp, which is the p3l shelf James already "
+            "rejected as blocks. Candidate B multiplies every zoom by "
+            "0.50/0.80 and does not add a per-zoom kernel. No z10 tiles."
+        ),
+    }
+    # silence unused if analytical nearest path differs
+    _ = tight_cell
+    return report
+
+
+def write_tight_judge_crops(frame, palette, peak_mask, out_dir: Path, measured: dict) -> None:
+    """A vs B at map-zoom 12 overzoom of the same windows."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    frame_id = frame.frame_id or "unknown-frame"
+    ordinary = measured["sites"]["dickinson"]["ordinary"]
+    a_med = ordinary[CANDIDATE_PEAK_HOLD].get("median_cells")
+    b_med = ordinary[CANDIDATE_TIGHT].get("median_cells")
+    note = (
+        f"Tight overzoom: native z9 tiles ×{TIGHT_OVERZOOM:.0f} (map z12). "
+        f"Ordinary 10–90% median {a_med} cell (A) vs {b_med} cell (B). Not a z12 cook."
+    )
+    jobs = (
+        (
+            "dickinson_tight_z12_A_vs_B.png",
+            "Dickinson ND  ·  tight overzoom",
+            DICKINSON,
+        ),
+        (
+            "belle_fourche_tight_z12_A_vs_B.png",
+            "Belle Fourche  ·  tight overzoom",
+            BELLE,
+        ),
+        (
+            "dickinson_core_transition_tight_z12_A_vs_B.png",
+            "Dickinson core  ·  tight transition",
+            DICKINSON_CORE,
+        ),
+    )
+    columns = dict(
+        left_title="A  ·  bilinear + peak hold",
+        left_sub="MPWG_RALA_DBZ_INTERP=bilinear_peak_hold",
+        right_title="B  ·  tight peak hold",
+        right_sub="MPWG_RALA_DBZ_INTERP=tight_peak_hold",
+    )
+    for filename, site, bbox in jobs:
+        print("tight", filename)
+        pair = _judge_pair(
+            render_overzoom(
+                frame, palette, bbox, CANDIDATE_PEAK_HOLD, peak_mask, TIGHT_OVERZOOM
+            ),
+            render_overzoom(
+                frame, palette, bbox, CANDIDATE_TIGHT, peak_mask, TIGHT_OVERZOOM
+            ),
+            site=site,
+            frame_id=frame_id,
+            note=note,
+            min_width=720,
+            **columns,
+        )
+        pair.save(out_dir / filename)
+        print("wrote", out_dir / filename, pair.size)
+
+
+def _decode_region(grib: Path):
+    palette = load_palette("mpwg-rala-2026-09")
+    if palette.version != "2026-09-rala-p3k":
+        raise SystemExit(f"unexpected palette {palette.version}")
+    if SPATIAL_REVISION != "p3l":
+        raise SystemExit(f"unexpected spatial stamp {SPATIAL_REVISION}")
+    region = BBox(-104.10, 44.40, -102.30, 47.35, "nd-sd")
+    print("decoding", grib)
+    decoded = decode_grib2(grib, bbox=region, product="ReflectivityAtLowestAltitude")
+    frame = _rala_clean(decoded)
+    print(f"frame {frame.frame_id} grid {frame.dbz.shape}")
+    peak_mask = local_peak_mask(frame.dbz, frame.category)
+    return frame, palette, peak_mask
+
+
 def _run_judge_only(grib: Path, out_dir: Path) -> None:
     palette = load_palette("mpwg-rala-2026-09")
     if palette.version != "2026-09-rala-p3k":
@@ -826,10 +1099,25 @@ def main() -> None:
         action="store_true",
         help="Write the four labeled p3l vs peak-hold crops and skip metrics",
     )
+    parser.add_argument(
+        "--tight-review",
+        action="store_true",
+        help="Measure transition widths and write tight z12 A vs B crops",
+    )
     args = parser.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
     if args.judge_only:
         _run_judge_only(args.grib, args.out)
+        return
+    if args.tight_review:
+        frame, palette, peak_mask = _decode_region(args.grib)
+        print("measuring transitions")
+        measured = measure_transitions(frame, peak_mask)
+        (args.out / "transition_widths.json").write_text(
+            json.dumps(_jsonable(measured), indent=2) + "\n"
+        )
+        print("wrote", args.out / "transition_widths.json")
+        write_tight_judge_crops(frame, palette, peak_mask, args.out, measured)
         return
 
     palette = load_palette("mpwg-rala-2026-09")

@@ -11,7 +11,7 @@ from typing import Dict, Iterable, List, Optional, Tuple
 import numpy as np
 from PIL import Image
 
-from mpwg_radar.config import RALA_DBZ_INTERP_BILINEAR_PEAK_HOLD
+from mpwg_radar.config import RALA_DBZ_INTERP_REVIEW
 from mpwg_radar.geo import BBox, iter_tiles, tile_bounds
 from mpwg_radar.grib import ReflectivityFrame
 from mpwg_radar.palette import Palette
@@ -492,10 +492,10 @@ def render_tile(
     and runs one seam: cell centers stay on the source dBZ, the shared face
     of two echo cells blends, and clear air is never a sample or a paint target.
 
-    ``dbz_interp`` defaults to off. ``bilinear_peak_hold`` replaces the splat
-    dBZ with bilinear-on-dBZ plus the p3l seam on local maxima, then the same
-    p3k LUT and the same splat category and clear-air alpha. Omitting it, or
-    passing ``""``, is the production splat with no extra sampling.
+    ``dbz_interp`` defaults to off. ``bilinear_peak_hold`` and
+    ``tight_peak_hold`` replace the splat dBZ before the p3k LUT and keep the
+    p3l seam on local maxima. Category and clear-air alpha stay on the splat.
+    Omitting the argument, or passing ``""``, is the production splat.
     """
     qlon, qlat = _query_lonlat(z, x, y, tile_size)
     if sample_mode in (SAMPLE_MASKED_BILINEAR, SAMPLE_MASKED_SPLAT):
@@ -507,16 +507,14 @@ def render_tile(
         sampled, sampled_cat, edge_scale = sampler(
             frame.dbz, frame.lat, frame.lon, qlat, qlon, frame.category
         )
-        if (
-            sample_mode == SAMPLE_MASKED_SPLAT
-            and dbz_interp == RALA_DBZ_INTERP_BILINEAR_PEAK_HOLD
-        ):
+        if sample_mode == SAMPLE_MASKED_SPLAT and dbz_interp in RALA_DBZ_INTERP_REVIEW:
             # Category and edge_scale stay on the splat above. Only dBZ changes,
-            # and only before colorize. Local import: the review sampler is not
+            # and only before colorize. Local import: review samplers are not
             # on the default call path.
-            from mpwg_radar.dbz_interp_offline import sample_bilinear_peak_hold
+            from mpwg_radar.dbz_interp_offline import sample_review_dbz
 
-            held, _held_cat = sample_bilinear_peak_hold(
+            held, _held_cat = sample_review_dbz(
+                dbz_interp,
                 frame.dbz,
                 frame.lat,
                 frame.lon,
@@ -614,15 +612,13 @@ def write_tiles(
     GIL inside the splat, so two workers fit a 2 vCPU host. The frame grid
     is read-only and is not copied per worker.
 
-    ``dbz_interp=""`` is production. ``bilinear_peak_hold`` is the review
-    sampler and applies only to ``masked-splat`` (RALA).
+    ``dbz_interp=""`` is production. ``bilinear_peak_hold`` and
+    ``tight_peak_hold`` are review samplers and apply only to ``masked-splat``
+    (RALA).
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     peak_mask = None
-    if (
-        dbz_interp == RALA_DBZ_INTERP_BILINEAR_PEAK_HOLD
-        and sample_mode == SAMPLE_MASKED_SPLAT
-    ):
+    if dbz_interp in RALA_DBZ_INTERP_REVIEW and sample_mode == SAMPLE_MASKED_SPLAT:
         from mpwg_radar.dbz_interp_offline import local_peak_mask
 
         peak_mask = local_peak_mask(frame.dbz, frame.category)

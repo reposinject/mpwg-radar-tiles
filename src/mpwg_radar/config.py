@@ -24,15 +24,24 @@ from mpwg_radar.products import (
 )
 
 
-# Review-only RALA sampler. Empty means production p3l splat. The one accepted
-# token replaces numerical dBZ before the p3k LUT and leaves category, the
+# Review-only RALA samplers. Empty means production p3l splat. Either token
+# replaces numerical dBZ before the p3k LUT and leaves category, the
 # clear-air alpha, the spatial stamp, and the palette alone.
+# A is the wider bilinear ramp. B is the tighter bounded ramp. Both keep
+# peak-hold on local maxima. Production stays off.
 RALA_DBZ_INTERP_BILINEAR_PEAK_HOLD = "bilinear_peak_hold"
+RALA_DBZ_INTERP_TIGHT_PEAK_HOLD = "tight_peak_hold"
+RALA_DBZ_INTERP_REVIEW = frozenset(
+    {
+        RALA_DBZ_INTERP_BILINEAR_PEAK_HOLD,
+        RALA_DBZ_INTERP_TIGHT_PEAK_HOLD,
+    }
+)
 _RALA_DBZ_INTERP_OFF = frozenset({"", "0", "off", "none", "false", "p3l"})
 
 
 def normalize_rala_dbz_interp(raw: Optional[str]) -> str:
-    """Map ``MPWG_RALA_DBZ_INTERP`` to ``""`` (production) or the review token.
+    """Map ``MPWG_RALA_DBZ_INTERP`` to ``""`` (production) or a review token.
 
     Hyphens are accepted so ``bilinear-peak-hold`` and ``bilinear_peak_hold``
     are the same switch. Anything else raises: a typo must not silently paint
@@ -41,12 +50,13 @@ def normalize_rala_dbz_interp(raw: Optional[str]) -> str:
     text = (raw or "").strip().lower().replace("-", "_")
     if text in _RALA_DBZ_INTERP_OFF:
         return ""
-    if text == RALA_DBZ_INTERP_BILINEAR_PEAK_HOLD:
-        return RALA_DBZ_INTERP_BILINEAR_PEAK_HOLD
+    if text in RALA_DBZ_INTERP_REVIEW:
+        return text
     raise ValueError(
-        f"Unknown MPWG_RALA_DBZ_INTERP={raw!r}. Omit it for production p3l, "
-        f"or set {RALA_DBZ_INTERP_BILINEAR_PEAK_HOLD} for a one-off review cook. "
-        "Do not set it on the production cooker."
+        f"Unknown MPWG_RALA_DBZ_INTERP={raw!r}. Omit it for production p3l. "
+        f"Review cooks: {RALA_DBZ_INTERP_BILINEAR_PEAK_HOLD} (A) or "
+        f"{RALA_DBZ_INTERP_TIGHT_PEAK_HOLD} (B). "
+        "Do not set either on the production cooker."
     )
 
 
@@ -157,8 +167,9 @@ class CookerConfig:
     r2: R2Config = field(default_factory=R2Config)
     palette_id: str = "mpwg-clean-2026-09"
     display_min_dbz: Optional[float] = None
-    # Empty: RALA tiles use the p3l splat. ``bilinear_peak_hold`` is a review
-    # sampler only. It does not change SPATIAL_REVISION or the palette.
+    # Empty: RALA tiles use the p3l splat. ``bilinear_peak_hold`` (A) and
+    # ``tight_peak_hold`` (B) are review samplers only. Neither changes
+    # SPATIAL_REVISION or the palette.
     rala_dbz_interp: str = ""
     user_agent: str = "mpwg-radar-tiles/1.0 (+https://github.com/reposinject/mpwg-radar-tiles)"
 

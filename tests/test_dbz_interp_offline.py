@@ -9,6 +9,7 @@ import numpy as np
 
 from mpwg_radar.config import (
     RALA_DBZ_INTERP_BILINEAR_PEAK_HOLD,
+    RALA_DBZ_INTERP_TIGHT_PEAK_HOLD,
     load_config,
     normalize_rala_dbz_interp,
 )
@@ -17,17 +18,27 @@ from mpwg_radar.dbz_interp_offline import (
     CANDIDATE_BILINEAR,
     CANDIDATE_IDS,
     CANDIDATE_PEAK_HOLD,
+    CANDIDATE_TIGHT,
     PRODUCTION_NAME,
+    TIGHT_BIAS_POWER,
     Z9_HALF_PIXEL_EW,
     Z9_HALF_PIXEL_NS,
     paint_candidate_tile,
     sample_bilinear_peak_hold,
     sample_dbz_candidate,
+    sample_localized_bilinear,
+    width_10_90,
 )
 from mpwg_radar.geo import latlon_to_global_xy
 from mpwg_radar.palette import RALA_PALETTE_VERSION, load_palette
 from mpwg_radar.products import CAT_MISSING, CAT_NO_ECHO, CAT_VALID, get_product
-from mpwg_radar.tiles import SPATIAL_REVISION, _DETAIL_CORE, render_tile, sample_masked_splat
+from mpwg_radar.tiles import (
+    SPATIAL_REVISION,
+    _DETAIL_CORE,
+    render_tile,
+    sample_masked_bilinear,
+    sample_masked_splat,
+)
 from tests.test_rala_render import _frame
 
 
@@ -67,6 +78,9 @@ def test_production_stamps_stay_p3l_and_the_flag_defaults_off():
     assert normalize_rala_dbz_interp("p3l") == ""
     assert normalize_rala_dbz_interp("bilinear_peak_hold") == RALA_DBZ_INTERP_BILINEAR_PEAK_HOLD
     assert normalize_rala_dbz_interp("bilinear-peak-hold") == RALA_DBZ_INTERP_BILINEAR_PEAK_HOLD
+    assert normalize_rala_dbz_interp("tight_peak_hold") == RALA_DBZ_INTERP_TIGHT_PEAK_HOLD
+    assert normalize_rala_dbz_interp("tight-peak-hold") == RALA_DBZ_INTERP_TIGHT_PEAK_HOLD
+    assert TIGHT_BIAS_POWER == 2.0
     import inspect
 
     assert inspect.signature(render_tile).parameters["dbz_interp"].default == ""
@@ -131,9 +145,13 @@ def test_sharp_peak_half_pixel_stays_hot_only_when_held():
     held65, _ = sample_dbz_candidate(
         CANDIDATE_PEAK_HOLD, dbz65, lat, lon, qlat, qlon, cat
     )
+    tight65, _ = sample_dbz_candidate(
+        CANDIDATE_TIGHT, dbz65, lat, lon, qlat, qlon, cat
+    )
     assert float(bilin65[0, 0]) < 65.0
     assert float(cubic65[0, 0]) < 65.0
     assert abs(float(held65[0, 0]) - 65.0) < 1e-3
+    assert abs(float(tight65[0, 0]) - 65.0) < 1e-3
 
 
 def test_ordinary_slope_cell_is_bilinear_not_a_plateau():
@@ -277,6 +295,97 @@ def test_flag_on_keeps_peaks_and_does_not_paint_clear_air():
     prod = np.asarray(production)
     clear_px = prod[..., 3] == 0
     assert np.all(rgba[clear_px, 3] == 0)
+
+
+def _line_between(lat, lon, j0, i0, j1, i1, n=401):
+    qlat = np.linspace(float(lat[j0]), float(lat[j1]), n, dtype=np.float64)[:, None]
+    qlon = np.linspace(float(lon[i0]), float(lon[i1]), n, dtype=np.float64)[:, None]
+    return qlat, qlon
+
+
+def test_tight_ramp_is_narrower_and_keeps_the_real_shoulder():
+    """B is a shorter 10–90% ramp than A, still exact at centers, no overshoot.
+
+    The 68 cell is a local max, so both A and B hold it. The east neighbor is
+    ordinary 30 dBZ. B must not lift that neighbor's interior the way plain
+    bilinear does, and the shared face stays between the two source values.
+    """
+    lat = np.arange(34.10, 33.90, -0.01, dtype=np.float64)
+    lon = np.arange(-101.50, -101.30, 0.01, dtype=np.float64)
+    dbz = np.full((lat.size, lon.size), 30.0, dtype=np.float32)
+    cat = np.full(dbz.shape, CAT_VALID, dtype=np.uint8)
+    dbz[8, 8:13] = np.array([10, 20, 30, 40, 50], dtype=np.float32)
+    qlat, qlon = _line_between(lat, lon, 8, 10, 8, 11)
+    wide, wide_cat = sample_dbz_candidate(
+        CANDIDATE_PEAK_HOLD, dbz, lat, lon, qlat, qlon, cat
+    )
+    tight, tight_cat = sample_dbz_candidate(
+        CANDIDATE_TIGHT, dbz, lat, lon, qlat, qlon, cat
+    )
+    assert np.all(wide_cat == CAT_VALID)
+    assert np.all(tight_cat == CAT_VALID)
+    wide_w = width_10_90(wide)
+    tight_w = width_10_90(tight)
+    assert 0.75 <= wide_w <= 0.85
+    assert 0.45 <= tight_w <= 0.55
+    assert tight_w < wide_w - 0.20
+    assert abs(float(tight[0, 0]) - 30.0) < 1e-3
+    assert abs(float(tight[-1, 0]) - 40.0) < 1e-3
+    assert float(np.min(tight)) >= 30.0 - 1e-3
+    assert float(np.max(tight)) <= 40.0 + 1e-3
+
+    same_power, _, _ = sample_localized_bilinear(
+        dbz, lat, lon, qlat, qlon, cat, power=1.0
+    )
+    plain, _, _ = sample_masked_bilinear(dbz, lat, lon, qlat, qlon, cat)
+    assert np.allclose(same_power, plain, rtol=0, atol=1e-5, equal_nan=True)
+
+    # Shoulder of the 68-in-30 peak: 0.20 cell inside the 30, toward the peak.
+    lat, lon, dbz, cat = _peak_grid()
+    q_shoulder = _at(lat, lon, 10, 11, 0.0, -0.20)
+    a_sh, _ = sample_dbz_candidate(CANDIDATE_PEAK_HOLD, dbz, lat, lon, *q_shoulder, cat)
+    b_sh, _ = sample_dbz_candidate(CANDIDATE_TIGHT, dbz, lat, lon, *q_shoulder, cat)
+    assert 30.0 < float(b_sh[0, 0]) < float(a_sh[0, 0]) < 68.0
+    assert float(a_sh[0, 0]) - float(b_sh[0, 0]) > 3.0
+    # Just inside the neighbor, the face is still a blend of 68 and 30.
+    q_face = _at(lat, lon, 10, 10, 0.0, 0.52)
+    a_face, _ = sample_dbz_candidate(CANDIDATE_PEAK_HOLD, dbz, lat, lon, *q_face, cat)
+    b_face, _ = sample_dbz_candidate(CANDIDATE_TIGHT, dbz, lat, lon, *q_face, cat)
+    for value in (float(a_face[0, 0]), float(b_face[0, 0])):
+        assert 30.0 < value < 68.0
+    half_lat, half_lon = _at(lat, lon, 10, 10, Z9_HALF_PIXEL_NS, Z9_HALF_PIXEL_EW)
+    half_b, half_cat = sample_dbz_candidate(
+        CANDIDATE_TIGHT, dbz, lat, lon, half_lat, half_lon, cat
+    )
+    assert half_cat[0, 0] == CAT_VALID
+    assert abs(float(half_b[0, 0]) - 68.0) < 1e-3
+
+
+def test_flag_tight_matches_candidate_and_leaves_clear_air(monkeypatch):
+    lat, lon, dbz, cat = _peak_grid()
+    frame = _frame(dbz, lat, lon, cat)
+    pal = load_palette("mpwg-rala-2026-09")
+    gx, gy = latlon_to_global_xy(float(lon[10]), float(lat[10]), 9)
+    z, x, y = 9, int(gx), int(gy)
+    flagged = render_tile(
+        frame,
+        pal,
+        z,
+        x,
+        y,
+        sample_mode="masked-splat",
+        dbz_interp=RALA_DBZ_INTERP_TIGHT_PEAK_HOLD,
+    )
+    offline = paint_candidate_tile(frame, pal, z, x, y, CANDIDATE_TIGHT)
+    assert np.array_equal(np.asarray(flagged[0]), np.asarray(offline))
+    production, _echo = render_tile(frame, pal, z, x, y, sample_mode="masked-splat")
+    prod = np.asarray(production)
+    rgba = np.asarray(flagged[0])
+    assert np.all(rgba[prod[..., 3] == 0, 3] == 0)
+    monkeypatch.setattr("mpwg_radar.config.load_dotenv", lambda path=None: None)
+    monkeypatch.setenv("MPWG_PRODUCT", "rala")
+    monkeypatch.setenv("MPWG_RALA_DBZ_INTERP", "tight_peak_hold")
+    assert load_config().rala_dbz_interp == "tight_peak_hold"
 
 
 def test_rala_dbz_interp_env_defaults_off(monkeypatch):

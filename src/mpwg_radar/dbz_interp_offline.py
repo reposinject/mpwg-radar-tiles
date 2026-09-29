@@ -1,9 +1,9 @@
 """Numerical dBZ interpolation candidates for RALA.
 
-The cooker calls ``sample_bilinear_peak_hold`` only when
-``MPWG_RALA_DBZ_INTERP=bilinear_peak_hold``. The default is off, and that
-path is the p3l splat. This module does not change ``SPATIAL_REVISION`` or
-the p3k palette.
+The cooker calls into this module only when ``MPWG_RALA_DBZ_INTERP`` is
+``bilinear_peak_hold`` (A) or ``tight_peak_hold`` (B). The default is off,
+and that path is the p3l splat. This module does not change
+``SPATIAL_REVISION`` or the p3k palette.
 
 Production paint order (unchanged by this module):
 
@@ -43,13 +43,21 @@ bicubic-clipped
     peak or a colder hole. Exact at cell centers. Same off-center cooling
     as any interpolator that is not pinned.
 
-bilinear-peak-hold
+bilinear-peak-hold (flag A, ``bilinear_peak_hold``)
     Masked bilinear on ordinary cells. Where the nearest cell is a
     plateau-aware local maximum, keep the p3l dBZ instead (exact core and
     the existing smoothstep seam). Sharp cores stay on today's footprint.
-    The rest of the field loses the flat plateau. Optional ``hold_min_dbz``
-    also keeps p3l on every cell at or above that value (magenta sensitivity
-    only; not the default).
+    The rest of the field loses the flat plateau. A 1D step's 10–90% width
+    is 0.80 cell, which is the whole center-to-center ramp. Optional
+    ``hold_min_dbz`` also keeps p3l on every cell at or above that value
+    (magenta sensitivity only; not the default).
+
+tight-peak-hold (flag B, ``tight_peak_hold``)
+    Same peak-hold and the same valid corners as A. The bilinear fraction
+    is remapped with power 2 so neighbor weight grows more slowly near a
+    cell center and the 10–90% width of a 1D step is 0.50 cell. Still a
+    convex combination: no overshoot, exact at cell centers, NO-ECHO is
+    not a sample. Not a sharpen mask and not a zoom-dependent kernel.
 
 A limited-radius Gaussian is not a candidate. It is not interpolating, so a
 cell center becomes a weighted average of its neighbors. That is the p3h
@@ -65,7 +73,7 @@ from PIL import Image
 
 from mpwg_radar.grib import ReflectivityFrame
 from mpwg_radar.palette import Palette
-from mpwg_radar.products import CAT_NO_ECHO, CAT_VALID
+from mpwg_radar.products import CAT_MISSING, CAT_NO_ECHO, CAT_VALID
 from mpwg_radar.tiles import (
     _grid_fractional,
     _nearest_indexers,
@@ -81,7 +89,19 @@ PRODUCTION_NAME = "p3l"
 CANDIDATE_BILINEAR = "bilinear-masked"
 CANDIDATE_BICUBIC = "bicubic-clipped"
 CANDIDATE_PEAK_HOLD = "bilinear-peak-hold"
-CANDIDATE_IDS = (CANDIDATE_BILINEAR, CANDIDATE_BICUBIC, CANDIDATE_PEAK_HOLD)
+CANDIDATE_TIGHT = "tight-peak-hold"
+CANDIDATE_IDS = (
+    CANDIDATE_BILINEAR,
+    CANDIDATE_BICUBIC,
+    CANDIDATE_PEAK_HOLD,
+    CANDIDATE_TIGHT,
+)
+# Power on the bilinear fraction for B. k=1 is plain bilinear (10–90% width
+# 0.80 cell). k=2 is 0.50 cell. k=3 is 0.35 cell and the near-flat shelf on
+# a 15 dBZ step grows toward p3l's 0.28 core, which is the block James
+# already rejected. k=2 is the measured middle. It is not a function of zoom:
+# one z9 raster cannot get narrower in screen pixels as the map overzooms.
+TIGHT_BIAS_POWER = 2.0
 
 # z9 CSS pixels per native 0.01° cell at Dickinson (~46.88°N), from the
 # p3n measurement. Half a pixel is the farthest a tile-pixel center can sit
@@ -207,6 +227,118 @@ def sample_bicubic_clipped(
     return out_dbz, out_cat
 
 
+def _bias_unit(t: np.ndarray, power: float) -> np.ndarray:
+    """Map a bilinear fraction into (0, 1) with less neighbor weight near 0 and 1.
+
+    ``power == 1`` is the identity. ``power > 1`` stays on 0, 0.5, and 1, is
+    monotonic, and pulls intermediate samples toward the nearer cell. The
+    result is still in ``[0, 1]``, so a later convex combination cannot
+    overshoot the valid corners.
+    """
+    arr = np.clip(np.asarray(t, dtype=np.float64), 0.0, 1.0)
+    if power == 1.0:
+        return arr.astype(np.float32)
+    tp = np.power(arr, power)
+    up = np.power(1.0 - arr, power)
+    return (tp / np.maximum(tp + up, 1e-30)).astype(np.float32)
+
+
+def sample_localized_bilinear(
+    dbz: np.ndarray,
+    lat: np.ndarray,
+    lon: np.ndarray,
+    qlat: np.ndarray,
+    qlon: np.ndarray,
+    category: Optional[np.ndarray] = None,
+    power: float = TIGHT_BIAS_POWER,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Masked bilinear with a tighter fraction. Same corners, less neighbor pull.
+
+    Returns ``(dbz, category, edge_scale)`` in the same shapes as
+    ``sample_masked_bilinear``. Invalid corners are left out of the average.
+    ``power == 1`` matches masked bilinear. Category is still the nearest cell.
+    """
+    src = np.asarray(dbz)
+    qlat_a = np.asarray(qlat)
+    qlon_a = np.asarray(qlon)
+    if category is None:
+        cat = np.where(np.isfinite(src), CAT_VALID, CAT_NO_ECHO).astype(np.uint8)
+    else:
+        cat = np.asarray(category)
+        if cat.shape != src.shape:
+            raise ValueError("category shape must match dbz")
+    out_dbz = np.full(qlat_a.shape, np.nan, dtype=np.float32)
+    out_cat = np.full(qlat_a.shape, CAT_MISSING, dtype=np.uint8)
+    edge_scale = np.zeros(qlat_a.shape, dtype=np.float32)
+    frac = _grid_fractional(lat, lon, qlat_a, qlon_a)
+    if frac is None or src.size == 0:
+        return out_dbz, out_cat, edge_scale
+    j_f, i_f = frac
+    j_n, i_n, in_grid = _nearest_indexers(lat, lon, qlat_a, qlon_a)
+    if not np.any(in_grid):
+        return out_dbz, out_cat, edge_scale
+    out_cat[in_grid] = cat[j_n[in_grid], i_n[in_grid]]
+    echo = in_grid & (out_cat == CAT_VALID)
+    if not np.any(echo):
+        return out_dbz, out_cat, edge_scale
+
+    from mpwg_radar.tiles import _EDGE_CLEAR, _EDGE_SOLID
+
+    ny, nx = src.shape
+    j0 = np.floor(j_f).astype(np.int32)
+    i0 = np.floor(i_f).astype(np.int32)
+    tj = _bias_unit(j_f - j0, power)
+    ti = _bias_unit(i_f - i0, power)
+    weights = (
+        (j0, i0, (1.0 - tj) * (1.0 - ti)),
+        (j0, i0 + 1, (1.0 - tj) * ti),
+        (j0 + 1, i0, tj * (1.0 - ti)),
+        (j0 + 1, i0 + 1, tj * ti),
+    )
+    num = np.zeros(qlat_a.shape, dtype=np.float32)
+    den = np.zeros(qlat_a.shape, dtype=np.float32)
+    for jj, ii, w in weights:
+        inside = (jj >= 0) & (jj < ny) & (ii >= 0) & (ii < nx)
+        jc = np.clip(jj, 0, ny - 1)
+        ic = np.clip(ii, 0, nx - 1)
+        vals = src[jc, ic]
+        good = inside & (cat[jc, ic] == CAT_VALID) & np.isfinite(vals)
+        num += np.where(good, vals.astype(np.float32) * w, np.float32(0.0))
+        den += np.where(good, w, np.float32(0.0))
+    use = echo & (den > 1e-6)
+    out_dbz[use] = num[use] / den[use]
+    fallback = echo & ~use
+    if np.any(fallback):
+        out_dbz[fallback] = src[j_n[fallback], i_n[fallback]]
+    mult = np.clip((den - _EDGE_CLEAR) / (_EDGE_SOLID - _EDGE_CLEAR), 0.0, 1.0)
+    edge_scale[echo] = mult[echo].astype(np.float32)
+    return out_dbz, out_cat, edge_scale
+
+
+def width_10_90(values: np.ndarray) -> float:
+    """Cell units from the 10% point to the 90% point along one center-to-center line.
+
+    ``values`` is evenly spaced from cell center A (index 0) to cell center B
+    (last index). Native nearest-cell sampling returns about ``1 / (n - 1)``
+    because the step sits on one sample. Bilinear on a pure 1D step returns
+    0.80. Returns NaN when the series never covers both levels.
+    """
+    y = np.asarray(values, dtype=np.float64).reshape(-1)
+    if y.size < 2:
+        return float("nan")
+    start = float(y[0])
+    end = float(y[-1])
+    if not np.isfinite(start) or not np.isfinite(end) or abs(end - start) < 1e-3:
+        return float("nan")
+    frac = (y - start) / (end - start)
+    x = np.linspace(0.0, 1.0, y.size)
+    i10 = np.flatnonzero(frac >= 0.10)
+    i90 = np.flatnonzero(frac >= 0.90)
+    if i10.size == 0 or i90.size == 0:
+        return float("nan")
+    return float(x[i90[0]] - x[i10[0]])
+
+
 def sample_bilinear_peak_hold(
     dbz: np.ndarray,
     lat: np.ndarray,
@@ -216,8 +348,12 @@ def sample_bilinear_peak_hold(
     category: Optional[np.ndarray] = None,
     hold_min_dbz: Optional[float] = None,
     peak_mask: Optional[np.ndarray] = None,
+    weight_power: float = 1.0,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Bilinear dBZ, with the p3l seam kept on local-maximum cells.
+
+    ``weight_power`` 1 is candidate A. ``TIGHT_BIAS_POWER`` is candidate B:
+    the same hold, a narrower ramp on ordinary cells.
 
     Returns ``(dbz, category)``. Category is the production nearest-cell
     footprint. Queries whose nearest cell is held get ``sample_masked_splat``
@@ -232,9 +368,14 @@ def sample_bilinear_peak_hold(
     splat_dbz, splat_cat, _edge = sample_masked_splat(
         src, lat, lon, qlat, qlon, category
     )
-    bilin_dbz, _bilin_cat, _edge_b = sample_masked_bilinear(
-        src, lat, lon, qlat, qlon, category
-    )
+    if weight_power == 1.0:
+        bilin_dbz, _bilin_cat, _edge_b = sample_masked_bilinear(
+            src, lat, lon, qlat, qlon, category
+        )
+    else:
+        bilin_dbz, _bilin_cat, _edge_b = sample_localized_bilinear(
+            src, lat, lon, qlat, qlon, category, power=weight_power
+        )
     if peak_mask is None:
         peak_mask = local_peak_mask(src, category, hold_min_dbz=hold_min_dbz)
     elif peak_mask.shape != src.shape:
@@ -251,6 +392,30 @@ def sample_bilinear_peak_hold(
         out[use_peak] = splat_dbz[use_peak]
     out[splat_cat != CAT_VALID] = np.float32(np.nan)
     return out, splat_cat
+
+
+def sample_tight_peak_hold(
+    dbz: np.ndarray,
+    lat: np.ndarray,
+    lon: np.ndarray,
+    qlat: np.ndarray,
+    qlon: np.ndarray,
+    category: Optional[np.ndarray] = None,
+    hold_min_dbz: Optional[float] = None,
+    peak_mask: Optional[np.ndarray] = None,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Candidate B. Peak-hold plus the tighter bounded bilinear."""
+    return sample_bilinear_peak_hold(
+        dbz,
+        lat,
+        lon,
+        qlat,
+        qlon,
+        category,
+        hold_min_dbz=hold_min_dbz,
+        peak_mask=peak_mask,
+        weight_power=TIGHT_BIAS_POWER,
+    )
 
 
 def sample_dbz_candidate(
@@ -287,8 +452,54 @@ def sample_dbz_candidate(
             hold_min_dbz=hold_min_dbz,
             peak_mask=peak_mask,
         )
+    if name == CANDIDATE_TIGHT:
+        return sample_tight_peak_hold(
+            dbz,
+            lat,
+            lon,
+            qlat,
+            qlon,
+            category,
+            hold_min_dbz=hold_min_dbz,
+            peak_mask=peak_mask,
+        )
     raise ValueError(
         f"Unknown dBZ interp candidate {name!r}. Choose from {CANDIDATE_IDS}."
+    )
+
+
+def sample_review_dbz(
+    flag: str,
+    dbz: np.ndarray,
+    lat: np.ndarray,
+    lon: np.ndarray,
+    qlat: np.ndarray,
+    qlon: np.ndarray,
+    category: Optional[np.ndarray] = None,
+    hold_min_dbz: Optional[float] = None,
+    peak_mask: Optional[np.ndarray] = None,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Numerical dBZ for one ``MPWG_RALA_DBZ_INTERP`` review token."""
+    key = (flag or "").strip().lower().replace("-", "_")
+    if key == "bilinear_peak_hold":
+        name = CANDIDATE_PEAK_HOLD
+    elif key == "tight_peak_hold":
+        name = CANDIDATE_TIGHT
+    else:
+        raise ValueError(
+            f"Unknown review sampler {flag!r}. "
+            "Use bilinear_peak_hold or tight_peak_hold."
+        )
+    return sample_dbz_candidate(
+        name,
+        dbz,
+        lat,
+        lon,
+        qlat,
+        qlon,
+        category,
+        hold_min_dbz=hold_min_dbz,
+        peak_mask=peak_mask,
     )
 
 

@@ -18,7 +18,7 @@ Source object: `s3://noaa-mrms-pds/CONUS/ReflectivityAtLowestAltitude_00.50/2026
 
 James: **D REVIEW COOK — GO.** The cooker flag `MPWG_RALA_DBZ_INTERP=monotone_pchip` calls `sample_monotone_pchip` (the final-harness D). The algorithm is not retuned. Production omit / off / p3l is unchanged. A and B tokens stay. C stays harness-only.
 
-D tiles are written under `rala-review/monotone_pchip/clean/`, not `rala/clean/latest`. The consumer CDN path stays `rala/clean/latest/{z}/{x}/{y}.png`. `frame.json` `mode_spec.dbz_interp` is `monotone_pchip` and `mode_spec.spatial` stays `p3l`. Cook, verify, and the Mapbox URL are in `D_REVIEW_COOK.md`. Do not put the variable in `/etc/mpwg-radar.env` or `mpwg-radar-cooker-rala.service`.
+D tiles are written under `rala-review/monotone_pchip/clean/`, not `rala/clean/latest`. The consumer CDN path stays `rala/clean/latest/{z}/{x}/{y}.png`. `frame.json` `mode_spec.dbz_interp` is `monotone_pchip` and `mode_spec.spatial` stays `p3l`. A one-off `--review-frames 8` cooks the newest scans from the last 30 minutes into that prefix and writes `products.rala.review.frames` (id, valid_time, tiles, frame). It does not enter the production 75-minute archive and it is not a timer. Cook, verify, and the Mapbox URL are in `D_REVIEW_COOK.md`. Do not put the variable in `/etc/mpwg-radar.env` or `mpwg-radar-cooker-rala.service`.
 
 ## James Final RALA Renderer Push — 2026-09-29
 

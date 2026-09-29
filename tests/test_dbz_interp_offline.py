@@ -597,5 +597,164 @@ def test_monotone_pchip_cook_lands_on_the_review_prefix(tmp_path: Path):
         "rala-review/monotone_pchip/clean/latest/{z}/{x}/{y}.png"
     )
     assert rala["review"]["consumer_latest"] == "rala/clean/latest/{z}/{x}/{y}.png"
+    assert isinstance(rala["review"]["frames"], list)
     assert not (tmp_path / "status-rala.json").exists()
     assert (tmp_path / "status-rala-review-monotone_pchip.json").is_file()
+
+
+def test_review_frames_match_the_clean_frame_shape(tmp_path: Path):
+    """products.rala.review.frames lists recent D frames; consumer latest stays."""
+    from datetime import datetime, timedelta, timezone
+
+    from mpwg_radar.config import CookerConfig
+    from mpwg_radar.cooker import _product_for_publish, _write_manifest
+    from mpwg_radar.geo import CENTRAL_TEXAS
+    from mpwg_radar.grib import ReflectivityFrame, frame_id_for
+
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    times = [now - timedelta(minutes=4), now - timedelta(minutes=2), now]
+    cfg = CookerConfig(
+        bbox=CENTRAL_TEXAS,
+        region_name="central-texas",
+        modes=["clean"],
+        min_zoom=6,
+        max_zoom=6,
+        output_dir=tmp_path,
+        data_dir=tmp_path / "data",
+        upload=False,
+        product_id="rala",
+        rala_dbz_interp="monotone_pchip",
+        rala_review_frames=8,
+    )
+    product = _product_for_publish(cfg)
+    radar = tmp_path / "radar"
+    mode_dir = product.mode_dir(radar, "clean")
+    # Older than the 30-minute review window. Must not enter the loop.
+    stale = now - timedelta(hours=2)
+    for when in list(times) + [stale]:
+        fid = frame_id_for(when)
+        dest = mode_dir / fid
+        dest.mkdir(parents=True)
+        (dest / "frame.json").write_text(
+            json.dumps({"id": fid, "valid_time": when.isoformat(), "mode": "clean"})
+        )
+    # A consumer frame that a D manifest rewrite must not retarget.
+    consumer = {
+        "products": {
+            "rala": {
+                "latest": "rala/clean/latest/{z}/{x}/{y}.png",
+                "latest_frame": "20260929T000000Z",
+                "modes": {
+                    "clean": {
+                        "latest": "rala/clean/latest/{z}/{x}/{y}.png",
+                        "latest_frame": "20260929T000000Z",
+                        "frames": [
+                            {
+                                "id": "20260929T000000Z",
+                                "valid_time": "2026-09-29T00:00:00+00:00",
+                                "tiles": "rala/clean/20260929T000000Z/{z}/{x}/{y}.png",
+                            }
+                        ],
+                    }
+                },
+            }
+        }
+    }
+    (radar / "manifest.json").write_text(json.dumps(consumer))
+    dbz = np.zeros((2, 2), dtype=np.float32)
+    frame = ReflectivityFrame(
+        dbz=dbz,
+        lat=np.array([30.0, 30.01], dtype=np.float64),
+        lon=np.array([-97.0, -96.99], dtype=np.float64),
+        valid_time=now,
+        product="ReflectivityAtLowestAltitude",
+        category=np.ones((2, 2), dtype=np.uint8),
+    )
+    palette = load_palette("mpwg-rala-2026-09")
+    manifest = _write_manifest(
+        cfg,
+        palette,
+        radar,
+        frame,
+        [{"id": frame.frame_id, "mode": "clean"}],
+        product,
+        promoted=True,
+    )
+    review = manifest["products"]["rala"]["review"]
+    assert review["label"] == "NOT PRODUCTION"
+    assert review["latest_frame"]
+    assert review["frame_json"].endswith("/latest/frame.json")
+    assert review["consumer_latest"] == "rala/clean/latest/{z}/{x}/{y}.png"
+    frames = review["frames"]
+    assert [item["id"] for item in frames] == [frame_id_for(when) for when in reversed(times)]
+    for item in frames:
+        assert set(item) >= {"id", "valid_time", "tiles", "frame"}
+        assert item["tiles"] == (
+            f"rala-review/monotone_pchip/clean/{item['id']}/{{z}}/{{x}}/{{y}}.png"
+        )
+        assert item["frame"] == (
+            f"rala-review/monotone_pchip/clean/{item['id']}/frame.json"
+        )
+    rala = manifest["products"]["rala"]
+    assert rala["latest"] == "rala/clean/latest/{z}/{x}/{y}.png"
+    assert rala["latest_frame"] == "20260929T000000Z"
+    assert rala["modes"]["clean"]["frames"][0]["tiles"].startswith("rala/clean/")
+    assert frame_id_for(stale) not in [item["id"] for item in frames]
+
+
+def test_d_review_loop_cooks_newest_n_and_stops(monkeypatch, tmp_path: Path):
+    from datetime import datetime, timedelta, timezone
+
+    from mpwg_radar.config import CookerConfig
+    from mpwg_radar.cooker import _cook_d_review_loop, _d_review_cook_limit
+    from mpwg_radar.ingest import MrmsScan
+
+    assert _d_review_cook_limit(CookerConfig(product_id="rala", rala_review_frames=8)) == 0
+    limited = CookerConfig(
+        product_id="rala",
+        rala_dbz_interp="monotone_pchip",
+        rala_review_frames=6,
+    )
+    assert _d_review_cook_limit(limited) == 6
+    assert _d_review_cook_limit(
+        CookerConfig(
+            product_id="rala",
+            rala_dbz_interp="monotone_pchip",
+            rala_review_frames=40,
+        )
+    ) == 12
+
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    scans = [
+        MrmsScan(valid_time=now - timedelta(minutes=2 * i), key=f"obj/{i}.grib2.gz")
+        for i in range(10)
+    ]
+    monkeypatch.setattr(
+        "mpwg_radar.cooker.list_recent_s3_scans", lambda *_a, **_k: scans
+    )
+    monkeypatch.setattr(
+        "mpwg_radar.cooker.download_s3_key",
+        lambda _cfg, key, _dest: Path(key),
+    )
+    seen = []
+
+    def _fake_cook(_cfg, **kwargs):
+        seen.append(str(kwargs.get("grib_path")))
+        assert kwargs.get("archive") is False
+        return {"frame_id": f"f{len(seen)}", "valid_time": now.isoformat(), "uploaded": 0}
+
+    monkeypatch.setattr("mpwg_radar.cooker.cook", _fake_cook)
+    cfg = CookerConfig(
+        product_id="rala",
+        rala_dbz_interp="monotone_pchip",
+        rala_review_frames=6,
+        output_dir=tmp_path,
+        data_dir=tmp_path / "data",
+        upload=False,
+        modes=["clean"],
+    )
+    result = _cook_d_review_loop(cfg, False, limit=6)
+    assert len(seen) == 6
+    assert seen[0].endswith("obj/0.grib2.gz")
+    assert result["archive_cooked"] == 6
+    assert result["review_frames"] == 6

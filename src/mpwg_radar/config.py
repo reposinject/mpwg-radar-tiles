@@ -71,6 +71,23 @@ def normalize_rala_dbz_interp(raw: Optional[str]) -> str:
     )
 
 
+def _rala_review_frames_env() -> int:
+    """``MPWG_RALA_REVIEW_FRAMES``. Empty means a single D frame, not a loop.
+
+    The value is stored as given. The cooker applies it only while
+    ``MPWG_RALA_DBZ_INTERP=monotone_pchip`` and caps the cook at 12.
+    """
+    raw = os.environ.get("MPWG_RALA_REVIEW_FRAMES", "").strip()
+    if not raw:
+        return 0
+    try:
+        return int(raw)
+    except ValueError as exc:
+        raise ValueError(
+            f"MPWG_RALA_REVIEW_FRAMES must be an integer, got {raw!r}"
+        ) from exc
+
+
 def _truthy(value: Optional[str], default: bool = False) -> bool:
     if value is None:
         return default
@@ -184,6 +201,10 @@ class CookerConfig:
     # D publishes under ``rala-review/monotone_pchip/`` so a review upload
     # does not replace ``rala/clean/latest``.
     rala_dbz_interp: str = ""
+    # One-off D review loop length. 0 means a single latest frame. Honored
+    # only when ``rala_dbz_interp`` is ``monotone_pchip``. The production
+    # RALA archive ignores this. Not read by the systemd unit.
+    rala_review_frames: int = 0
     user_agent: str = "mpwg-radar-tiles/1.0 (+https://github.com/reposinject/mpwg-radar-tiles)"
 
     @property
@@ -316,6 +337,7 @@ def load_config(overrides: Optional[dict] = None) -> CookerConfig:
         rala_dbz_interp=normalize_rala_dbz_interp(
             os.environ.get("MPWG_RALA_DBZ_INTERP")
         ),
+        rala_review_frames=_rala_review_frames_env(),
     )
     if overrides:
         for key, value in overrides.items():

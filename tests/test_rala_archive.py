@@ -55,6 +55,19 @@ def test_frame_retention_is_rala_specific():
     policy = frame_retention(rala)
     assert policy.max_frames == 60
     assert policy.max_age_seconds == 75 * 60
+    # A D review count must not shrink the production archive.
+    flagged_off = CookerConfig(product_id="rala", rala_review_frames=8)
+    still = frame_retention(flagged_off)
+    assert still.max_frames == 60
+    assert still.max_age_seconds == 75 * 60
+    review = CookerConfig(
+        product_id="rala",
+        rala_dbz_interp="monotone_pchip",
+        rala_review_frames=8,
+    )
+    short = frame_retention(review)
+    assert short.max_frames == 8
+    assert short.max_age_seconds == 30 * 60
     composite = CookerConfig(product_id="composite", retention_frames=5)
     other = frame_retention(composite)
     assert other.max_frames == 5

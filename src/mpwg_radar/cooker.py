@@ -61,8 +61,48 @@ class FrameRetention:
     max_age_seconds: Optional[float] = None
 
 
+# Short D review loop. Not the production 75-minute / 60-frame archive.
+# ~2-minute MRMS cadence: 8 frames is about 16 minutes, inside 30 minutes.
+RALA_REVIEW_LOOP_FRAMES = 8
+RALA_REVIEW_LOOP_MINUTES = 30
+RALA_REVIEW_LOOP_HARD_CAP = 12
+
+
+def _d_review_cook_limit(cfg: CookerConfig) -> int:
+    """How many newest scans this D invocation should cook.
+
+    0 means one latest frame. Production (flag off) is always 0 here so the
+    75-minute archive is unchanged. Values above 12 are capped.
+    """
+    if cfg.rala_dbz_interp != RALA_DBZ_INTERP_MONOTONE_PCHIP:
+        return 0
+    requested = int(cfg.rala_review_frames or 0)
+    if requested <= 0:
+        return 0
+    if requested > RALA_REVIEW_LOOP_HARD_CAP:
+        log.warning(
+            "D review frame count %s capped at %s",
+            requested,
+            RALA_REVIEW_LOOP_HARD_CAP,
+        )
+    return min(requested, RALA_REVIEW_LOOP_HARD_CAP)
+
+
 def frame_retention(cfg: CookerConfig) -> FrameRetention:
-    """RALA uses its own window. Composite stays on ``retention_frames``."""
+    """RALA uses its own window. Composite stays on ``retention_frames``.
+
+    A D review cook keeps a short list on the review prefix only. The
+    production RALA window stays 75 minutes / 60 frames when the flag is off.
+    """
+    if cfg.product_id == "rala" and cfg.rala_dbz_interp == RALA_DBZ_INTERP_MONOTONE_PCHIP:
+        requested = int(cfg.rala_review_frames or 0)
+        cap = RALA_REVIEW_LOOP_FRAMES if requested <= 0 else min(
+            requested, RALA_REVIEW_LOOP_HARD_CAP
+        )
+        return FrameRetention(
+            max_frames=max(1, cap),
+            max_age_seconds=float(RALA_REVIEW_LOOP_MINUTES) * 60.0,
+        )
     if cfg.product_id == "rala":
         return FrameRetention(
             max_frames=max(1, int(cfg.rala_retention_frames)),
@@ -217,6 +257,26 @@ def cook(
         and grib_path is None
         and cfg.product_id == "rala"
     ):
+        # D never enters the production 75-minute archive. A short loop is
+        # opt-in (--review-frames / MPWG_RALA_REVIEW_FRAMES). Otherwise one
+        # latest frame is cooked onto the review prefix.
+        if cfg.rala_dbz_interp == RALA_DBZ_INTERP_MONOTONE_PCHIP:
+            limit = _d_review_cook_limit(cfg)
+            if limit > 0:
+                return _cook_d_review_loop(cfg, upload=upload, limit=limit)
+            log.warning(
+                "D review cook is a single latest frame. "
+                "Pass --review-frames 8 or MPWG_RALA_REVIEW_FRAMES=8 for the "
+                "short loop. The production 75-minute archive is not used."
+            )
+            return cook(cfg, source="mrms", upload=upload, archive=False)
+        if int(cfg.rala_review_frames or 0) > 0:
+            log.warning(
+                "MPWG_RALA_REVIEW_FRAMES=%s is ignored. It applies only when "
+                "MPWG_RALA_DBZ_INTERP=monotone_pchip. Production RALA archive "
+                "is unchanged.",
+                cfg.rala_review_frames,
+            )
         return _cook_rala_archive(cfg, upload=upload)
     product = _product_for_publish(cfg)
     palette = load_palette(cfg.palette_id)
@@ -823,6 +883,7 @@ def _write_manifest(
                 review_frame = frame.frame_id
             else:
                 review_frame = previous["latest_frame"]
+            review_frames = (this_modes.get(cfg.modes[0]) or {}).get("frames") or []
             entry["review"] = {
                 "label": "NOT PRODUCTION",
                 "dbz_interp": cfg.rala_dbz_interp,
@@ -834,6 +895,10 @@ def _write_manifest(
                     f"{product.tile_prefix}/{cfg.modes[0]}/latest/frame.json"
                 ),
                 "consumer_latest": consumer_latest,
+                # Same objects as products.rala.modes.clean.frames: id,
+                # valid_time, tiles, frame. Newest first. The app loop reads
+                # products.rala.review.frames.
+                "frames": review_frames,
             }
             products_block[pid] = entry
             continue
@@ -1109,6 +1174,168 @@ def _archive_jobs(
     ordered = list(jobs.values())
     ordered.sort(key=lambda job: job.valid_time, reverse=True)
     return ordered
+
+
+def _cook_d_review_loop(
+    cfg: CookerConfig, upload: Optional[bool], *, limit: int
+) -> Dict:
+    """Cook the newest ``limit`` RALA scans into the D review prefix.
+
+    One invocation. No timer, no 75-minute catch-up, no second pass that
+    pulls scans published after the list. Production ``rala/clean`` is not
+    the publish product, so those tiles stay put.
+    """
+    limit = max(1, min(int(limit), RALA_REVIEW_LOOP_HARD_CAP))
+    policy = frame_retention(cfg)
+    max_age = timedelta(seconds=policy.max_age_seconds or 0)
+    try:
+        scans = list_recent_s3_scans(cfg, max_age=max_age)
+    except Exception as exc:  # noqa: BLE001 — one latest frame is still useful
+        log.warning(
+            "D review loop listing failed (%s); cooking latest scan only", exc
+        )
+        return cook(cfg, source="mrms", upload=upload, archive=False)
+
+    jobs = _archive_jobs(scans, None, policy, _now())[:limit]
+    if not jobs:
+        log.warning("D review loop window was empty; cooking latest scan only")
+        return cook(cfg, source="mrms", upload=upload, archive=False)
+
+    radar_root = cfg.output_dir / "radar"
+    product = _product_for_publish(cfg)
+    need_upload = _need_upload(cfg, upload)
+    palette_version = load_palette(cfg.palette_id).version
+    pending = [
+        job
+        for job in jobs
+        if not _frame_is_complete(
+            cfg,
+            radar_root,
+            product,
+            job.frame_id,
+            need_upload,
+            palette_version=palette_version,
+        )
+    ]
+    log.info(
+        "D review loop max_age_min=%s limit=%s listed=%d pending=%d",
+        RALA_REVIEW_LOOP_MINUTES,
+        limit,
+        len(jobs),
+        len(pending),
+    )
+    if not pending:
+        _sync_review_frames(cfg, radar_root, product)
+        newest = jobs[0]
+        finished = _now()
+        age = (finished - newest.valid_time.astimezone(timezone.utc)).total_seconds()
+        result = {
+            "frame_id": newest.frame_id,
+            "valid_time": _iso(newest.valid_time),
+            "source_valid_time": _iso(newest.valid_time),
+            "fetched_at": _iso(finished),
+            "cook_finished_at": _iso(finished),
+            "upload_finished_at": None,
+            "source_age_seconds": round(age, 1),
+            "cook_seconds": 0.0,
+            "upload_seconds": 0.0,
+            "lag_seconds": round(age, 1),
+            "skipped": "unchanged",
+            "source": "NOAA MRMS",
+            "product": product.mrms_name,
+            "product_id": product.id,
+            "region": cfg.region_name,
+            "modes": [],
+            "manifest": str((radar_root / "manifest.json").resolve()),
+            "uploaded": 0,
+            "upload_skipped": 0,
+            "upload_duration_seconds": 0.0,
+            "palette": cfg.palette_id,
+            "display_min_dbz": None,
+            "archive_cooked": 0,
+            "archive_pending": 0,
+            "archive_listed": len(jobs),
+            "review_frames": limit,
+        }
+        _write_status(cfg, product, result)
+        log.info("D review loop already holds %d scan(s)", len(jobs))
+        return result
+
+    cooked: List[Dict] = []
+    for index, job in enumerate(pending, start=1):
+        log.info(
+            "D review loop cook %d/%d frame=%s valid_time=%s",
+            index,
+            len(pending),
+            job.frame_id,
+            _iso(job.valid_time),
+        )
+        try:
+            if not job.key:
+                raise IngestError(f"RALA scan {job.frame_id} has no source object")
+            path = download_s3_key(cfg, job.key, cfg.data_dir)
+            result = cook(
+                cfg,
+                source="mrms",
+                grib_path=path,
+                upload=upload,
+                archive=False,
+            )
+        except Exception as exc:  # noqa: BLE001 — one bad GRIB must not drop the rest
+            log.error("D review frame %s failed (%s); continuing", job.frame_id, exc)
+            continue
+        cooked.append(result)
+
+    if not cooked:
+        raise IngestError(
+            f"D review loop had pending scan(s) but none cooked "
+            f"(pending={len(pending)})"
+        )
+    summary = max(cooked, key=lambda item: item.get("valid_time") or "")
+    summary = dict(summary)
+    summary["archive_cooked"] = len(cooked)
+    summary["archive_pending"] = 0
+    summary["archive_listed"] = len(jobs)
+    summary["review_frames"] = limit
+    _write_status(cfg, product, summary)
+    log.info(
+        "D review loop cooked=%d listed=%d newest=%s",
+        len(cooked),
+        len(jobs),
+        summary.get("frame_id"),
+    )
+    return summary
+
+
+def _sync_review_frames(
+    cfg: CookerConfig, radar_root: Path, product: ProductSpec
+) -> List[Dict]:
+    """Rewrite ``products.rala.review.frames`` from the review tree.
+
+    Consumer ``products.rala.latest`` is left as it is. Used when the short
+    loop is already on disk and this invocation does not retile.
+    """
+    frames = apply_retention(
+        _list_frames(product.mode_dir(radar_root, cfg.modes[0]), product, cfg.modes[0]),
+        frame_retention(cfg),
+    )
+    path = radar_root / "manifest.json"
+    if not path.is_file():
+        return frames
+    try:
+        manifest = json.loads(path.read_text())
+    except json.JSONDecodeError:
+        return frames
+    products = manifest.setdefault("products", {})
+    rala = products.get("rala")
+    if not isinstance(rala, dict):
+        return frames
+    review = dict(rala.get("review") or {})
+    review["frames"] = frames
+    rala["review"] = review
+    path.write_text(json.dumps(manifest, indent=2) + "\n")
+    log.info("Refreshed products.rala.review.frames count=%d", len(frames))
+    return frames
 
 
 def _cook_rala_archive(cfg: CookerConfig, upload: Optional[bool]) -> Dict:

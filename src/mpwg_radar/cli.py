@@ -51,6 +51,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         default=None,
         help="MRMS product id: composite (production default) or rala",
     )
+    cook_p.add_argument(
+        "--review-frames",
+        type=int,
+        default=None,
+        help=(
+            "D review only (MPWG_RALA_DBZ_INTERP=monotone_pchip): cook the "
+            "newest N RALA scans from the last 30 minutes into "
+            "rala-review/monotone_pchip/. N is capped at 12; 8 is the "
+            "short loop. Ignored for production RALA. Do not put this on "
+            "the systemd unit."
+        ),
+    )
 
     smoke_p = sub.add_parser(
         "smoke",
@@ -131,6 +143,8 @@ def _cmd_cook(args) -> int:
         overrides["skip_empty_tiles"] = False
     if args.product:
         overrides["product_id"] = args.product
+    if getattr(args, "review_frames", None) is not None:
+        overrides["rala_review_frames"] = args.review_frames
     cfg = load_config(overrides)
     upload = False if args.no_upload else (True if args.upload else None)
     result = cook(cfg, source=args.source, grib_path=args.grib, upload=upload)

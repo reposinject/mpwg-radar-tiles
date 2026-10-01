@@ -51,6 +51,18 @@ def test_rala_timeout_covers_archive_catchup_without_raising_composite():
     assert "mpwg-radar-cooker.service.d" not in setup
 
 
+def test_rala_unit_does_not_enable_structure_review():
+    """Production RALA must not cook STRUCTURE/FIX2. The flag stays off."""
+    directives = _directives(_text("mpwg-radar-cooker-rala.service"))
+    assert not any("MPWG_RALA_DBZ_INTERP" in line for line in directives)
+    env = (ROOT / ".env.example").read_text(encoding="utf-8")
+    for line in env.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        assert not stripped.startswith("MPWG_RALA_DBZ_INTERP")
+
+
 def test_rala_service_does_not_conflict_with_composite():
     unit = _text("mpwg-radar-cooker-rala.service")
     directives = _directives(unit)

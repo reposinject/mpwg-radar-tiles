@@ -81,6 +81,7 @@ def classify_radar_files(
     frame_id: str,
     modes: Sequence[str],
     product_id: str = DEFAULT_PRODUCT_ID,
+    tile_prefix: Optional[str] = None,
 ) -> Tuple[Dict[str, List[Tuple[Path, str]]], int]:
     """Split radar_root into upload groups for this cook; count skipped files.
 
@@ -98,7 +99,9 @@ def classify_radar_files(
     skipped = 0
     for path in _iter_files(local_root):
         rel = path.relative_to(local_root).as_posix()
-        bucket = _upload_group(rel, frame_id, mode_set, product_id)
+        bucket = _upload_group(
+            rel, frame_id, mode_set, product_id, tile_prefix=tile_prefix
+        )
         if bucket is None:
             skipped += 1
             continue
@@ -123,11 +126,12 @@ def _upload_group(
     frame_id: str,
     modes: set[str],
     product_id: str = DEFAULT_PRODUCT_ID,
+    tile_prefix: Optional[str] = None,
 ) -> Optional[str]:
     if rel == "manifest.json":
         return "manifest"
     spec = get_product(product_id)
-    prefix = (spec.tile_prefix or "").strip("/")
+    prefix = (spec.tile_prefix if tile_prefix is None else tile_prefix).strip("/")
     other = _other_product_prefixes(product_id)
     first = rel.split("/", 1)[0]
     if first in other:
@@ -214,6 +218,7 @@ class R2Publisher:
         include_manifest: bool = True,
         include_latest: bool = True,
         copy_latest: bool = False,
+        tile_prefix: Optional[str] = None,
     ) -> UploadStats:
         """Upload this cook's new frame + latest pointers + manifest.
 
@@ -235,7 +240,11 @@ class R2Publisher:
         is not stuck behind a second full PUT of the same tiles.
         """
         groups, skipped = classify_radar_files(
-            local_root, frame_id, modes, product_id=product_id
+            local_root,
+            frame_id,
+            modes,
+            product_id=product_id,
+            tile_prefix=tile_prefix,
         )
         if not include_latest:
             skipped += len(groups["latest"])

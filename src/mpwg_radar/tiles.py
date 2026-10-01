@@ -11,6 +11,7 @@ from typing import Dict, Iterable, List, Optional, Tuple
 import numpy as np
 from PIL import Image
 
+from mpwg_radar.config import RALA_DBZ_INTERP_REVIEW
 from mpwg_radar.geo import BBox, iter_tiles, tile_bounds
 from mpwg_radar.grib import ReflectivityFrame
 from mpwg_radar.palette import Palette
@@ -480,6 +481,8 @@ def render_tile(
     y: int,
     tile_size: int = 512,
     sample_mode: str = SAMPLE_NEAREST,
+    dbz_interp: str = "",
+    structure_field: Optional[object] = None,
 ) -> Tuple[Image.Image, bool]:
     """Return (PNG image, has_echo).
 
@@ -488,6 +491,11 @@ def render_tile(
     path. ``masked-splat`` (RALA, p3l) keeps the nearest cell as the footprint
     and runs one seam: cell centers stay on the source dBZ, the shared face
     of two echo cells blends, and clear air is never a sample or a paint target.
+
+    ``dbz_interp`` defaults to off. ``structure_v1`` and ``fix2`` replace the
+    splat dBZ with the locked FIX2/STRUCTURE field, hard-quantized to 0.5,
+    and only before colorize. Category and clear-air alpha stay on the splat.
+    Omitting the argument, or passing ``""``, is the production splat.
     """
     qlon, qlat = _query_lonlat(z, x, y, tile_size)
     if sample_mode in (SAMPLE_MASKED_BILINEAR, SAMPLE_MASKED_SPLAT):
@@ -499,6 +507,23 @@ def render_tile(
         sampled, sampled_cat, edge_scale = sampler(
             frame.dbz, frame.lat, frame.lon, qlat, qlon, frame.category
         )
+        if (
+            sample_mode == SAMPLE_MASKED_SPLAT
+            and dbz_interp in RALA_DBZ_INTERP_REVIEW
+            and structure_field is not None
+        ):
+            frac = _grid_fractional(frame.lat, frame.lon, qlat, qlon)
+            if frac is not None:
+                from mpwg_radar.structure_recon import sample_structure_dbz
+
+                held, held_cat = sample_structure_dbz(
+                    structure_field, frac[0], frac[1], quantize=True
+                )
+                held = np.asarray(held, dtype=np.float32)
+                held[(sampled_cat != CAT_VALID) | (held_cat != CAT_VALID)] = np.float32(
+                    np.nan
+                )
+                sampled = held
         rgba = palette.colorize(sampled, category=sampled_cat)
         # Palette alpha (wispy low dBZ) times the in-mask stamp. Clear-air
         # queries have edge_scale 0, so they cannot pick up a neighbor's color.
@@ -577,14 +602,40 @@ def write_tiles(
     skip_empty: bool = True,
     sample_mode: str = SAMPLE_NEAREST,
     workers: int = 1,
+    dbz_interp: str = "",
 ) -> Dict:
     """Write `{z}/{x}/{y}.png` under out_dir. Returns tile stats.
 
     ``workers`` > 1 renders echo tiles on a thread pool. Numpy releases the
     GIL inside the splat, so two workers fit a 2 vCPU host. The frame grid
     is read-only and is not copied per worker.
+
+    ``dbz_interp=""`` is production. ``structure_v1`` and ``fix2`` are review
+    reconstructions and apply only to ``masked-splat`` (RALA). The field is
+    built once per frame and shared read-only across tile workers.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
+    structure_field = None
+    if dbz_interp in RALA_DBZ_INTERP_REVIEW and sample_mode == SAMPLE_MASKED_SPLAT:
+        log.warning(
+            "EXPERIMENTAL RALA dBZ interp %s is ON for this tile write. "
+            "Spatial stamp stays p3l. Palette stays p3k. Quant step is 0.5. "
+            "Do not deploy these tiles onto rala/clean/latest.",
+            dbz_interp,
+        )
+        if frame.category is None:
+            raise ValueError("STRUCTURE/FIX2 review requires a category mask")
+        from mpwg_radar.structure_recon import (
+            CORE_SAMPLES_PER_CELL,
+            prepare_structure_field,
+        )
+
+        structure_field = prepare_structure_field(
+            frame.dbz,
+            frame.category,
+            dbz_interp,
+            samples_per_cell=CORE_SAMPLES_PER_CELL,
+        )
     skipped = 0
     jobs: List[Tuple[int, int, int]] = []
     # An empty parent tile has no echo in any child. Mark it and skip the
@@ -605,7 +656,15 @@ def write_tiles(
     def _one(item: Tuple[int, int, int]) -> Optional[str]:
         z, x, y = item
         image, has_echo = render_tile(
-            frame, palette, z, x, y, tile_size, sample_mode=sample_mode
+            frame,
+            palette,
+            z,
+            x,
+            y,
+            tile_size,
+            sample_mode=sample_mode,
+            dbz_interp=dbz_interp,
+            structure_field=structure_field,
         )
         if skip_empty and not has_echo:
             return None

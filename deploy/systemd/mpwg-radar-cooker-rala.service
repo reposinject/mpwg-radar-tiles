@@ -20,6 +20,8 @@ EnvironmentFile=-/etc/mpwg-radar.env
 # Environment= after EnvironmentFile wins, so a host MPWG_UPLOAD_CONCURRENCY=2
 # cannot throttle this unit. RALA ignores that shared knob unless
 # MPWG_RALA_UPLOAD_CONCURRENCY is set; pin 8 here anyway.
+# Do not set MPWG_RALA_DBZ_INTERP here. structure_v1 and fix2 are manual
+# review cooks under rala-review/. See docs/p3n-dbz-interp/STRUCTURE_REVIEW_COOK.md.
 Environment=MPWG_PRODUCT=rala
 Environment=MPWG_RALA_UPLOAD_CONCURRENCY=8
 # Native z9 for close zooms. Environment= after EnvironmentFile wins, so

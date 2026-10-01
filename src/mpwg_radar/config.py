@@ -24,6 +24,42 @@ from mpwg_radar.products import (
 )
 
 
+# Gated RALA review samplers. Empty means production p3l. Both tokens
+# replace numerical dBZ before the p3k LUT and publish under
+# ``rala-review/<token>/``. They do not change the spatial stamp, the
+# palette, or ``rala/clean/latest``. Do not set either on the production
+# cooker or in /etc/mpwg-radar.env.
+RALA_DBZ_INTERP_STRUCTURE_V1 = "structure_v1"
+RALA_DBZ_INTERP_FIX2 = "fix2"
+RALA_DBZ_INTERP_REVIEW = frozenset(
+    {
+        RALA_DBZ_INTERP_STRUCTURE_V1,
+        RALA_DBZ_INTERP_FIX2,
+    }
+)
+_RALA_DBZ_INTERP_OFF = frozenset({"", "0", "off", "none", "false", "p3l"})
+
+
+def normalize_rala_dbz_interp(raw: Optional[str]) -> str:
+    """Map ``MPWG_RALA_DBZ_INTERP`` to ``""`` (production) or a review token.
+
+    Hyphens are accepted so ``structure-v1`` and ``structure_v1`` are the
+    same switch. Anything else raises: a typo must not silently paint
+    production p3l during a review cook.
+    """
+    text = (raw or "").strip().lower().replace("-", "_")
+    if text in _RALA_DBZ_INTERP_OFF:
+        return ""
+    if text in RALA_DBZ_INTERP_REVIEW:
+        return text
+    raise ValueError(
+        f"Unknown MPWG_RALA_DBZ_INTERP={raw!r}. Omit it for production p3l. "
+        f"Review cooks: {RALA_DBZ_INTERP_STRUCTURE_V1} (STRUCTURE V1) or "
+        f"{RALA_DBZ_INTERP_FIX2} (FIX2 fallback). "
+        "Do not set either on the production cooker."
+    )
+
+
 def _truthy(value: Optional[str], default: bool = False) -> bool:
     if value is None:
         return default
@@ -131,6 +167,11 @@ class CookerConfig:
     r2: R2Config = field(default_factory=R2Config)
     palette_id: str = "mpwg-clean-2026-09"
     display_min_dbz: Optional[float] = None
+    # Empty: RALA tiles use the p3l splat. ``structure_v1`` and ``fix2`` are
+    # review reconstructions only. Neither changes SPATIAL_REVISION or the
+    # palette. Both publish under ``rala-review/<token>/`` so a review upload
+    # does not replace ``rala/clean/latest``. Not read by the systemd unit.
+    rala_dbz_interp: str = ""
     user_agent: str = "mpwg-radar-tiles/1.0 (+https://github.com/reposinject/mpwg-radar-tiles)"
 
     @property
@@ -157,8 +198,10 @@ class CookerConfig:
             raise ValueError(
                 f"Unknown product {self.product_id!r}. Cookable: {list(COOKABLE_PRODUCT_IDS)}"
             )
+        self.rala_dbz_interp = normalize_rala_dbz_interp(self.rala_dbz_interp)
 
     def __post_init__(self) -> None:
+        self.rala_dbz_interp = normalize_rala_dbz_interp(self.rala_dbz_interp)
         if self.product_id == DEFAULT_PRODUCT_ID:
             return
         spec = get_product(self.product_id)
@@ -258,6 +301,9 @@ def load_config(overrides: Optional[dict] = None) -> CookerConfig:
         ),
         palette_id=palette_id,
         display_min_dbz=display_min,
+        rala_dbz_interp=normalize_rala_dbz_interp(
+            os.environ.get("MPWG_RALA_DBZ_INTERP")
+        ),
     )
     if overrides:
         for key, value in overrides.items():

@@ -16,7 +16,11 @@ from typing import Dict, Iterator, List, Optional, Tuple
 
 import numpy as np
 
-from mpwg_radar.config import CookerConfig, load_config
+from mpwg_radar.config import (
+    RALA_DBZ_INTERP_REVIEW,
+    CookerConfig,
+    load_config,
+)
 from mpwg_radar.geo import CONUS_MAX_ZOOM, CONUS_MIN_ZOOM, count_tiles, tiles_by_zoom
 from mpwg_radar.grib import ReflectivityFrame, decode_grib2, frame_id_for
 from mpwg_radar.ingest import (
@@ -28,7 +32,15 @@ from mpwg_radar.ingest import (
     list_recent_s3_scans,
 )
 from mpwg_radar.palette import Palette, load_palette
-from mpwg_radar.products import DEFAULT_PRODUCT_ID, PRODUCTS, ProductSpec
+from mpwg_radar.products import (
+    DEFAULT_PRODUCT_ID,
+    PRODUCTS,
+    RALA,
+    RALA_REVIEW_ROOT,
+    ProductSpec,
+    rala_review_tile_prefix,
+    with_review_tile_prefix,
+)
 from mpwg_radar.publish import R2Publisher, UploadStats
 from mpwg_radar.qc import MODES, apply_mode
 from mpwg_radar.synthetic import synthetic_central_texas
@@ -48,6 +60,49 @@ class FrameRetention:
 
     max_frames: int
     max_age_seconds: Optional[float] = None
+
+
+def _is_review_publish(product: ProductSpec) -> bool:
+    """True when this cook writes a labeled review tree, not consumer ``rala/``."""
+    prefix = (product.tile_prefix or "").strip("/")
+    return product.id == "rala" and prefix.startswith(RALA_REVIEW_ROOT + "/")
+
+
+def _product_for_publish(cfg: CookerConfig) -> ProductSpec:
+    """Production spec, or the review prefix when STRUCTURE/FIX2 is on.
+
+    The flag stays off for the production timer. A review cook must not
+    replace ``rala/clean/latest``.
+    """
+    product = cfg.product
+    if product.id == "rala" and cfg.rala_dbz_interp in RALA_DBZ_INTERP_REVIEW:
+        return with_review_tile_prefix(product, cfg.rala_dbz_interp)
+    return product
+
+
+def _review_publish_marker(product: ProductSpec) -> str:
+    return ".published-" + product.tile_prefix.replace("/", "-")
+
+
+def _consumer_rala_latest(mode: str) -> str:
+    return RALA.tile_url_template(mode, "latest")
+
+
+def _consumer_latest_is_production(radar_root: Path, mode: str) -> bool:
+    """True when the on-disk manifest already points consumers at production RALA."""
+    path = radar_root / "manifest.json"
+    if not path.is_file():
+        return False
+    try:
+        manifest = json.loads(path.read_text())
+    except json.JSONDecodeError:
+        return False
+    rala = (manifest.get("products") or {}).get("rala") or {}
+    if rala.get("latest") != _consumer_rala_latest(mode):
+        return False
+    if not rala.get("latest_frame"):
+        return False
+    return (radar_root / "rala" / mode / "latest" / "frame.json").is_file()
 
 
 def frame_retention(cfg: CookerConfig) -> FrameRetention:
@@ -138,8 +193,19 @@ def cook(
     loaded_frame: Optional[ReflectivityFrame] = None,
 ) -> Dict:
     cfg = cfg or load_config()
+    if cfg.product_id == "rala" and cfg.rala_dbz_interp in RALA_DBZ_INTERP_REVIEW:
+        log.warning(
+            "EXPERIMENTAL MPWG_RALA_DBZ_INTERP=%s. Spatial stamp stays %s and "
+            "the palette stays p3k. Quant step is 0.5. Category and clear-air "
+            "alpha stay on the p3l path. Do not set this on the production cooker. "
+            "Review tile prefix=%s. Consumer path stays rala/clean/latest.",
+            cfg.rala_dbz_interp,
+            SPATIAL_REVISION,
+            rala_review_tile_prefix(cfg.rala_dbz_interp),
+        )
     # RALA live cooks fill a rolling window of real scans. Composite, synthetic,
-    # and an explicit GRIB path stay single-frame.
+    # and an explicit GRIB path stay single-frame. A STRUCTURE/FIX2 review cook
+    # uses that same window but writes only the review prefix.
     if (
         archive
         and loaded_frame is None
@@ -147,8 +213,14 @@ def cook(
         and grib_path is None
         and cfg.product_id == "rala"
     ):
+        if cfg.rala_dbz_interp in RALA_DBZ_INTERP_REVIEW:
+            log.warning(
+                "Review archive cook writes %s only. It does not retile "
+                "rala/clean. This is a long CONUS cook, not a second timer.",
+                rala_review_tile_prefix(cfg.rala_dbz_interp),
+            )
         return _cook_rala_archive(cfg, upload=upload)
-    product = cfg.product
+    product = _product_for_publish(cfg)
     palette = load_palette(cfg.palette_id)
     if cfg.display_min_dbz is not None:
         palette = palette.with_display_min(cfg.display_min_dbz)
@@ -189,6 +261,9 @@ def cook(
     )
     radar_root = cfg.output_dir / "radar"
     radar_root.mkdir(parents=True, exist_ok=True)
+    # Snapshot before this cook rewrites manifest.json. A review PUT is
+    # allowed only when consumers were already on rala/clean/latest.
+    consumer_manifest_live = _consumer_latest_is_production(radar_root, cfg.modes[0])
 
     should_upload = cfg.upload if upload is None else upload
     if _already_published(cfg, radar_root, product, frame.frame_id, should_upload):
@@ -293,18 +368,44 @@ def cook(
             include_latest=promoted_any,
             # Promoted RALA frames already PUT the frame tiles. Copy those
             # bytes onto latest/ server-side instead of uploading them twice.
+            # A review latest is rala-review/.../latest, not rala/clean/latest.
             copy_latest=(product.id == "rala" and promoted_any),
+            tile_prefix=product.tile_prefix if _is_review_publish(product) else None,
         )
         # Stamp the manifest just before its PUT. The latency line below
-        # uses the clock after that PUT returns.
+        # uses the clock after that PUT returns. A review cook PUTs the
+        # manifest only when this tree already advertised the consumer path,
+        # so a side output directory cannot replace the live CDN manifest.
         manifest_upload_started = _now()
         manifest_stats = UploadStats()
+        put_review_manifest = (not _is_review_publish(product)) or consumer_manifest_live
+        if _is_review_publish(product) and not consumer_manifest_live:
+            log.warning(
+                "Review cook will not PUT manifest.json. products.rala.latest "
+                "on this tree is not %s. Review tiles still upload under %s. "
+                "The production CDN manifest is left as it is.",
+                _consumer_rala_latest(cfg.modes[0]),
+                product.tile_prefix,
+            )
 
         def _put_manifest() -> None:
             nonlocal manifest_stats
+            if not put_review_manifest:
+                if promoted_any and _is_review_publish(product):
+                    (radar_root / _review_publish_marker(product)).write_text(
+                        frame.frame_id + "\n"
+                    )
+                return
             manifest_stats = publisher.upload_manifest(radar_root)
             if promoted_any:
-                (radar_root / f".published-{product.id}").write_text(frame.frame_id + "\n")
+                if _is_review_publish(product):
+                    (radar_root / _review_publish_marker(product)).write_text(
+                        frame.frame_id + "\n"
+                    )
+                else:
+                    (radar_root / f".published-{product.id}").write_text(
+                        frame.frame_id + "\n"
+                    )
 
         _write_manifest(
             cfg,
@@ -314,7 +415,7 @@ def cook(
             mode_summaries,
             product,
             cook_finished_at=cook_finished_at,
-            upload_finished_at=manifest_upload_started,
+            upload_finished_at=manifest_upload_started if put_review_manifest else None,
             before_unlock=_put_manifest,
             promoted=promoted_any,
         )
@@ -427,8 +528,15 @@ def _already_published(
     except json.JSONDecodeError:
         return False
     entry = (manifest.get("products") or {}).get(product.id) or {}
-    published = entry.get("latest_frame")
-    if not published:
+    if _is_review_publish(product):
+        reviews = entry.get("reviews") or {}
+        slot = reviews.get(cfg.rala_dbz_interp) or {}
+        if not slot and (entry.get("review") or {}).get("dbz_interp") == cfg.rala_dbz_interp:
+            slot = entry.get("review") or {}
+        published = slot.get("latest_frame")
+    else:
+        published = entry.get("latest_frame")
+    if not published and not _is_review_publish(product):
         modes = entry.get("modes") or {}
         ids = [
             (modes.get(mode) or {}).get("latest_frame")
@@ -454,10 +562,18 @@ def _already_published(
             return False
         if not _spatial_stamp_current(meta, product):
             return False
+        if _is_review_publish(product):
+            stamped_interp = (meta.get("mode_spec") or {}).get("dbz_interp")
+            if stamped_interp != cfg.rala_dbz_interp:
+                return False
     if should_upload and cfg.r2.enabled:
-        # Written only after the manifest PUT returns. A local manifest that
+        # Written only after the tile upload returns. A local manifest that
         # already names this frame is not enough: the CDN copy may have failed.
-        marker = radar_root / f".published-{product.id}"
+        # Review cooks use their own marker so they cannot satisfy production.
+        if _is_review_publish(product):
+            marker = radar_root / _review_publish_marker(product)
+        else:
+            marker = radar_root / f".published-{product.id}"
         return marker.is_file() and marker.read_text().strip() == frame_id
     return True
 
@@ -474,6 +590,10 @@ def _add_upload_stats(total: UploadStats, extra: UploadStats) -> None:
 
 def _write_status(cfg: CookerConfig, product: ProductSpec, result: Dict) -> None:
     payload = json.dumps(result, indent=2) + "\n"
+    if _is_review_publish(product):
+        name = "status-" + product.tile_prefix.replace("/", "-") + ".json"
+        (cfg.output_dir / name).write_text(payload)
+        return
     (cfg.output_dir / f"status-{product.id}.json").write_text(payload)
     # status.json stays the composite cook so a parallel RALA run cannot
     # clobber the production status operators already tail.
@@ -546,7 +666,31 @@ def _write_mode(
         skip_empty=cfg.skip_empty_tiles,
         sample_mode=product.sample_mode,
         workers=max(1, int(cfg.tile_workers)),
+        dbz_interp=cfg.rala_dbz_interp if product.sample_mode == "masked-splat" else "",
     )
+    mode_spec = {
+        "min_dbz": MODES[mode].min_dbz if product.apply_dbz_floor else None,
+        "apply_dbz_floor": product.apply_dbz_floor,
+        "despeckle": MODES[mode].despeckle and product.apply_despeckle,
+        "smooth": MODES[mode].smooth,
+        "smooth_kind": (
+            "masked-splat"
+            if product.sample_mode == "masked-splat"
+            else "edge-aware"
+            if product.edge_aware_smooth and MODES[mode].smooth and product.apply_grid_smooth
+            else "mild-3x3"
+            if MODES[mode].smooth and product.apply_grid_smooth
+            else "none"
+        ),
+        "sample": product.sample_mode,
+        "spatial": (
+            SPATIAL_REVISION if product.sample_mode == "masked-splat" else "none"
+        ),
+        "description": MODES[mode].description,
+    }
+    # Review marker only. Production frame.json does not grow a dbz_interp key.
+    if product.sample_mode == "masked-splat" and cfg.rala_dbz_interp:
+        mode_spec["dbz_interp"] = cfg.rala_dbz_interp
     meta = {
         "id": frame.frame_id,
         "product": frame.product,
@@ -554,26 +698,7 @@ def _write_mode(
         "source": frame.source,
         "valid_time": frame.valid_time.astimezone(timezone.utc).isoformat(),
         "mode": mode,
-        "mode_spec": {
-            "min_dbz": MODES[mode].min_dbz if product.apply_dbz_floor else None,
-            "apply_dbz_floor": product.apply_dbz_floor,
-            "despeckle": MODES[mode].despeckle and product.apply_despeckle,
-            "smooth": MODES[mode].smooth,
-            "smooth_kind": (
-                "masked-splat"
-                if product.sample_mode == "masked-splat"
-                else "edge-aware"
-                if product.edge_aware_smooth and MODES[mode].smooth and product.apply_grid_smooth
-                else "mild-3x3"
-                if MODES[mode].smooth and product.apply_grid_smooth
-                else "none"
-            ),
-            "sample": product.sample_mode,
-            "spatial": (
-                SPATIAL_REVISION if product.sample_mode == "masked-splat" else "none"
-            ),
-            "description": MODES[mode].description,
-        },
+        "mode_spec": mode_spec,
         "palette": palette.as_dict(),
         "region": cfg.region_name,
         "bbox": cfg.bbox.as_dict(),
@@ -695,6 +820,42 @@ def _write_manifest(
         entry = dict(products_block.get(pid) or spec.as_public_dict())
         entry.update(spec.as_public_dict())
         entry["default"] = pid == DEFAULT_PRODUCT_ID
+        if pid == product.id and _is_review_publish(product):
+            consumer_latest = _consumer_rala_latest(cfg.modes[0])
+            current_latest = str(entry.get("latest") or "")
+            if not current_latest or current_latest.startswith(f"{RALA_REVIEW_ROOT}/"):
+                entry["latest"] = consumer_latest
+            token = cfg.rala_dbz_interp
+            reviews = dict(entry.get("reviews") or {})
+            previous = dict(reviews.get(token) or {})
+            if not previous and (entry.get("review") or {}).get("dbz_interp") == token:
+                previous = dict(entry.get("review") or {})
+            if promoted or not previous.get("latest_frame"):
+                review_frame = frame.frame_id
+            else:
+                review_frame = previous["latest_frame"]
+            review_frames = (this_modes.get(cfg.modes[0]) or {}).get("frames") or []
+            review_entry = {
+                "label": "NOT PRODUCTION",
+                "dbz_interp": token,
+                "spatial": SPATIAL_REVISION,
+                "palette_version": palette.version,
+                "latest": product.tile_url_template(cfg.modes[0], "latest"),
+                "latest_frame": review_frame,
+                "frame_json": (
+                    f"{product.tile_prefix}/{cfg.modes[0]}/latest/frame.json"
+                ),
+                "consumer_latest": consumer_latest,
+                "frames": review_frames,
+            }
+            reviews[token] = review_entry
+            entry["reviews"] = reviews
+            # ``review`` is the cook that just updated this manifest (same
+            # shape as the D review block). ``reviews`` keeps every token so
+            # a FIX2 cook does not erase STRUCTURE.
+            entry["review"] = review_entry
+            products_block[pid] = entry
+            continue
         if pid == product.id:
             entry["palette"] = palette.as_dict()
             entry["display_min_dbz"] = palette.min_dbz
@@ -904,6 +1065,10 @@ def _frame_is_complete(
                     return False
             if not _spatial_stamp_current(meta, product):
                 return False
+            if _is_review_publish(product):
+                stamped_interp = (meta.get("mode_spec") or {}).get("dbz_interp")
+                if stamped_interp != cfg.rala_dbz_interp:
+                    return False
         mode_dir = product.mode_dir(radar_root, mode)
         if need_upload and not (mode_dir / f".uploaded-{frame_id}").is_file():
             return False
@@ -995,7 +1160,7 @@ def _cook_rala_archive(cfg: CookerConfig, upload: Optional[bool]) -> Dict:
         return cook(cfg, source="mrms", upload=upload, archive=False)
 
     radar_root = cfg.output_dir / "radar"
-    product = cfg.product
+    product = _product_for_publish(cfg)
     need_upload = _need_upload(cfg, upload)
     palette_version = load_palette(cfg.palette_id).version
     pending = [

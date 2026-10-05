@@ -17,16 +17,25 @@ Offline acceptance (James, 2026-10-01) is a dense neighborhood hybrid:
 
 The per-pixel evaluation is the same function the offline dense grid samples.
 Tiles call it at each pixel's native fractional index instead of materializing
-that grid. Do not retune these locks.
+that grid. Nearest-cell NO-ECHO is not a sample, so those pixels are masked
+off before the trend/residual work. When numba is installed the remaining
+echo pixels use those same formulas in one compiled loop. Do not retune
+these locks.
 """
 
 from __future__ import annotations
 
 import math
+import threading
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
+
+try:
+    from numba import njit
+except ImportError:  # pragma: no cover - cooker fallback is the chunked sampler
+    njit = None
 
 from mpwg_radar.products import CAT_MISSING, CAT_NO_ECHO, CAT_VALID
 
@@ -974,7 +983,231 @@ def _residual_from_slots(
     return out
 
 
-def sample_structure_dbz(
+def _structure_kernel_py(
+    rf, cf, jn, inn, order,
+    dbz, cat,
+    slot_y, slot_x, slot_a, slot_ok,
+    j0, i0,
+    hw, min_taps, radius, soft_floor, sig,
+    reach, d2_floor, pad, power_half, valid_code,
+):
+    """Same-formula echo eval. Pixels that share a nearest cell share its taps.
+
+    ``order`` groups echo queries by nearest cell. Residual sources are packed
+    once per cell. A source that cannot fall inside the reach of any query in
+    that cell is left out; every kept source still takes the per-query reach
+    test, so the IDW set matches the chunked gather.
+    """
+    n = rf.shape[0]
+    out = np.empty(n, dtype=np.float64)
+    ny = dbz.shape[0]
+    nx = dbz.shape[1]
+    height = slot_y.shape[0]
+    width = slot_y.shape[1]
+    cap = slot_y.shape[2]
+    span = 2 * pad + 1
+    buf = cap * span * span
+    if buf < 1:
+        buf = 1
+    sy = np.empty(buf, dtype=np.float64)
+    sx = np.empty(buf, dtype=np.float64)
+    sa = np.empty(buf, dtype=np.float64)
+    ntap = (2 * hw + 1) * (2 * hw + 1)
+    tap_z = np.empty(ntap, dtype=np.float64)
+    tap_ok = np.empty(ntap, dtype=np.uint8)
+    tap_jr = np.empty(ntap, dtype=np.int32)
+    tap_ir = np.empty(ntap, dtype=np.int32)
+    r2 = radius * radius
+    inv_sig2 = 1.0 / (sig * sig)
+    reach_pad = reach + 0.5 + 1e-6
+    p = 0
+    while p < n:
+        head = order[p]
+        jj = int(jn[head])
+        ii = int(inn[head])
+        p2 = p + 1
+        while p2 < n and int(jn[order[p2]]) == jj and int(inn[order[p2]]) == ii:
+            p2 += 1
+        # Queries clipped onto the grid edge can sit more than half a cell
+        # from that edge cell. Keep every slot source for those groups.
+        wide = False
+        for t in range(p, p2):
+            q = order[t]
+            dr = rf[q] - float(jj)
+            dc = cf[q] - float(ii)
+            if dr < 0.0:
+                dr = -dr
+            if dc < 0.0:
+                dc = -dc
+            if dr > 0.5 + 1e-6 or dc > 0.5 + 1e-6:
+                wide = True
+                break
+        m = 0
+        lj = jj - int(j0)
+        li = ii - int(i0)
+        if cap > 0 and height > 0 and width > 0:
+            for dj in range(-pad, pad + 1):
+                yy = lj + dj
+                if yy < 0 or yy >= height:
+                    continue
+                for di in range(-pad, pad + 1):
+                    xx = li + di
+                    if xx < 0 or xx >= width:
+                        continue
+                    for k in range(cap):
+                        if not slot_ok[yy, xx, k]:
+                            continue
+                        yv = slot_y[yy, xx, k]
+                        xv = slot_x[yy, xx, k]
+                        if not wide:
+                            ddy = yv - float(jj)
+                            ddx = xv - float(ii)
+                            if ddy < 0.0:
+                                ddy = -ddy
+                            if ddx < 0.0:
+                                ddx = -ddx
+                            if ddy > reach_pad or ddx > reach_pad:
+                                continue
+                        sy[m] = yv
+                        sx[m] = xv
+                        sa[m] = slot_a[yy, xx, k]
+                        m += 1
+        ti = 0
+        for dj in range(-hw, hw + 1):
+            jr = jj + dj
+            for di in range(-hw, hw + 1):
+                ir = ii + di
+                inside = (jr >= 0) and (jr < ny) and (ir >= 0) and (ir < nx)
+                jr_c = jr
+                if jr_c < 0:
+                    jr_c = 0
+                elif jr_c >= ny:
+                    jr_c = ny - 1
+                ir_c = ir
+                if ir_c < 0:
+                    ir_c = 0
+                elif ir_c >= nx:
+                    ir_c = nx - 1
+                z = dbz[jr_c, ir_c]
+                ok = inside and cat[jr_c, ir_c] == valid_code and np.isfinite(z)
+                tap_z[ti] = z
+                tap_ok[ti] = 1 if ok else 0
+                tap_jr[ti] = jr
+                tap_ir[ti] = ir
+                ti += 1
+        for t in range(p, p2):
+            q = order[t]
+            rq = rf[q]
+            cq = cf[q]
+            nearest_z = dbz[jj, ii]
+            sw = 0.0
+            swx = 0.0
+            swy = 0.0
+            swxx = 0.0
+            swxy = 0.0
+            swyy = 0.0
+            swz = 0.0
+            swxz = 0.0
+            swyz = 0.0
+            n_taps = 0
+            lo = 1e300
+            hi = -1e300
+            sh_n = 0.0
+            sh_d = 0.0
+            sh_rn = 0.0
+            sh_rd = 0.0
+            has_r = False
+            for ti in range(ntap):
+                if tap_ok[ti] == 0:
+                    continue
+                z = tap_z[ti]
+                dx = float(tap_ir[ti]) - cq
+                dy = float(tap_jr[ti]) - rq
+                d2 = dx * dx + dy * dy + soft_floor
+                w = math.exp(-0.5 * d2 * inv_sig2)
+                if w < 1e-15:
+                    w = 1e-15
+                n_taps += 1
+                if z < lo:
+                    lo = z
+                if z > hi:
+                    hi = z
+                sw += w
+                swx += w * dx
+                swy += w * dy
+                swxx += w * dx * dx
+                swxy += w * dx * dy
+                swyy += w * dy * dy
+                swz += w * z
+                swxz += w * dx * z
+                swyz += w * dy * z
+                sh_n += w * z
+                sh_d += w
+                if d2 <= r2 + 1e-15:
+                    has_r = True
+                    sh_rn += w * z
+                    sh_rd += w
+            if n_taps == 0:
+                trend = nearest_z
+                lo = nearest_z
+                hi = nearest_z
+            elif n_taps == 1:
+                trend = lo
+            else:
+                det = (
+                    sw * (swxx * swyy - swxy * swxy)
+                    - swx * (swx * swyy - swxy * swy)
+                    + swy * (swx * swxy - swxx * swy)
+                )
+                if n_taps >= min_taps and abs(det) > 1e-14:
+                    det_a = (
+                        swz * (swxx * swyy - swxy * swxy)
+                        - swx * (swxz * swyy - swxy * swyz)
+                        + swy * (swxz * swxy - swxx * swyz)
+                    )
+                    trend = det_a / det
+                elif has_r:
+                    trend = sh_rn / sh_rd
+                else:
+                    trend = sh_n / sh_d
+                if trend < lo:
+                    trend = lo
+                elif trend > hi:
+                    trend = hi
+            num = 0.0
+            den = 0.0
+            for s in range(m):
+                dy = sy[s] - rq
+                dx = sx[s] - cq
+                adx = dx if dx >= 0.0 else -dx
+                ady = dy if dy >= 0.0 else -dy
+                if adx > reach or ady > reach:
+                    continue
+                d2 = dx * dx + dy * dy + d2_floor
+                if power_half == 1.0:
+                    w = 1.0 / d2
+                else:
+                    w = 1.0 / (d2 ** power_half)
+                num += w * sa[s]
+                den += w
+            residual = num / den if den > 0.0 else 0.0
+            val = trend + residual
+            if val < lo:
+                val = lo
+            elif val > hi:
+                val = hi
+            out[q] = val
+        p = p2
+    return out
+
+
+if njit is not None:
+    _structure_kernel = njit(cache=True, nogil=True)(_structure_kernel_py)
+else:  # pragma: no cover
+    _structure_kernel = None
+
+
+def _sample_structure_chunked(
     field: StructureField,
     rf: np.ndarray,
     cf: np.ndarray,
@@ -982,12 +1215,7 @@ def sample_structure_dbz(
     quantize: bool = True,
     chunk: int = 8192,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """Evaluate FIX2/STRUCTURE at native fractional indices.
-
-    ``rf`` / ``cf`` follow the stored grid (row 0 is ``dbz[0]``). Returns
-    ``(dbz, category)``. Display cooks pass ``quantize=True`` (0.5 dBZ).
-    NO-ECHO and missing nearest cells stay non-valid and NaN.
-    """
+    """Original chunked NumPy sampler. Reference for the compiled path."""
     row = np.asarray(rf, dtype=np.float64)
     col = np.asarray(cf, dtype=np.float64)
     if row.shape != col.shape:
@@ -1019,6 +1247,167 @@ def sample_structure_dbz(
         values = hard_quantize_dbz(values, QUANT_STEP_DBZ)
         values[cats != CAT_VALID] = np.nan
     return values.reshape(row.shape), cats.reshape(row.shape)
+
+
+def _empty_slots() -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, int, int]:
+    slot_y = np.zeros((1, 1, 1), dtype=np.float64)
+    slot_x = np.zeros((1, 1, 1), dtype=np.float64)
+    slot_a = np.zeros((1, 1, 1), dtype=np.float64)
+    slot_ok = np.zeros((1, 1, 1), dtype=np.bool_)
+    return slot_y, slot_x, slot_a, slot_ok, 0, 0
+
+
+_kernel_ready = False
+_kernel_lock = threading.Lock()
+
+
+def _eval_echo_compiled(
+    rf: np.ndarray,
+    cf: np.ndarray,
+    jn: np.ndarray,
+    inn: np.ndarray,
+    order: np.ndarray,
+    dbz: np.ndarray,
+    cat: np.ndarray,
+    slots: Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, int, int],
+    hw: int,
+    min_taps: int,
+    radius: float,
+    soft_floor: float,
+    sig: float,
+    reach: float,
+    d2_floor: float,
+    pad: int,
+    power_half: float,
+) -> np.ndarray:
+    """Run the compiled echo kernel, serializing only the first compile."""
+    global _kernel_ready
+    slot_y, slot_x, slot_a, slot_ok, j0, i0 = slots
+    args = (
+        np.ascontiguousarray(rf, dtype=np.float64),
+        np.ascontiguousarray(cf, dtype=np.float64),
+        np.ascontiguousarray(jn, dtype=np.int32),
+        np.ascontiguousarray(inn, dtype=np.int32),
+        np.ascontiguousarray(order, dtype=np.int64),
+        dbz,
+        cat,
+        slot_y,
+        slot_x,
+        slot_a,
+        slot_ok,
+        np.int64(j0),
+        np.int64(i0),
+        np.int64(hw),
+        np.int64(min_taps),
+        np.float64(radius),
+        np.float64(soft_floor),
+        np.float64(sig),
+        np.float64(reach),
+        np.float64(d2_floor),
+        np.int64(pad),
+        np.float64(power_half),
+        np.int64(CAT_VALID),
+    )
+    if _kernel_ready:
+        return _structure_kernel(*args)
+    with _kernel_lock:
+        out = _structure_kernel(*args)
+        _kernel_ready = True
+        return out
+
+
+def _sample_structure_fast(
+    field: StructureField,
+    row: np.ndarray,
+    col: np.ndarray,
+    *,
+    quantize: bool,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Echo-only compiled evaluation. Same formulas as the chunked sampler."""
+    flat_r = np.ascontiguousarray(row.ravel(), dtype=np.float64)
+    flat_c = np.ascontiguousarray(col.ravel(), dtype=np.float64)
+    values = np.full(flat_r.shape, np.nan, dtype=np.float64)
+    cats = np.full(flat_r.shape, CAT_NO_ECHO, dtype=np.uint8)
+    if flat_r.size == 0:
+        return values.reshape(row.shape), cats.reshape(row.shape)
+    ny, nx = field.dbz.shape
+    dbz = field.dbz
+    cat = field.cat
+    if dbz.dtype != np.float64 or not dbz.flags.c_contiguous:
+        dbz = np.ascontiguousarray(dbz, dtype=np.float64)
+    if cat.dtype != np.uint8 or not cat.flags.c_contiguous:
+        cat = np.ascontiguousarray(cat, dtype=np.uint8)
+    jn_all = np.clip(np.rint(flat_r).astype(np.int32), 0, max(ny - 1, 0))
+    inn_all = np.clip(np.rint(flat_c).astype(np.int32), 0, max(nx - 1, 0))
+    nearest_cat = cat[jn_all, inn_all]
+    nearest_z = dbz[jn_all, inn_all]
+    echo = (nearest_cat == CAT_VALID) & np.isfinite(nearest_z)
+    missing = nearest_cat == CAT_MISSING
+    cats[missing & ~echo] = CAT_MISSING
+    if not np.any(echo):
+        return values.reshape(row.shape), cats.reshape(row.shape)
+    cats[echo] = CAT_VALID
+    idx = np.flatnonzero(echo)
+    jn_e = jn_all[idx]
+    inn_e = inn_all[idx]
+    key = jn_e.astype(np.int64) * np.int64(nx) + inn_e.astype(np.int64)
+    order = np.argsort(key, kind="mergesort")
+    slots = _source_slots(field, jn_e, inn_e)
+    if slots is None:
+        slots = _empty_slots()
+    trend_params = field.trend_params
+    hybrid = field.hybrid_params
+    got = _eval_echo_compiled(
+        flat_r[idx],
+        flat_c[idx],
+        jn_e,
+        inn_e,
+        order,
+        dbz,
+        cat,
+        slots,
+        int(trend_params.get("half_width", HALF_WIDTH)),
+        int(trend_params.get("min_taps_for_plane", MIN_TAPS_FOR_PLANE)),
+        float(trend_params.get("shepard_radius_cells", SHEPARD_RADIUS_CELLS)),
+        float(trend_params.get("soft_d2_floor", TREND_SOFT_FLOOR)),
+        max(float(trend_params.get("gaussian_sigma_cells", GAUSS_SIGMA_CELLS)), 1e-6),
+        float(hybrid.get("half_width", HALF_WIDTH)) + 0.75,
+        float(hybrid.get("residual_d2_floor", residual_d2_floor(CORE_SAMPLES_PER_CELL))),
+        int(_SOURCE_PAD),
+        float(hybrid.get("residual_idw_power", IDW_POWER)) / 2.0,
+    )
+    values[idx] = got
+    if quantize:
+        values = hard_quantize_dbz(values, QUANT_STEP_DBZ)
+        values[cats != CAT_VALID] = np.nan
+    return values.reshape(row.shape), cats.reshape(row.shape)
+
+
+def sample_structure_dbz(
+    field: StructureField,
+    rf: np.ndarray,
+    cf: np.ndarray,
+    *,
+    quantize: bool = True,
+    chunk: int = 8192,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Evaluate FIX2/STRUCTURE at native fractional indices.
+
+    ``rf`` / ``cf`` follow the stored grid (row 0 is ``dbz[0]``). Returns
+    ``(dbz, category)``. Display cooks pass ``quantize=True`` (0.5 dBZ).
+    NO-ECHO and missing nearest cells stay non-valid and NaN. Echo pixels
+    use the compiled loop when numba is installed; otherwise the original
+    chunked NumPy loop. Both apply the locked formulas.
+    """
+    row = np.asarray(rf, dtype=np.float64)
+    col = np.asarray(cf, dtype=np.float64)
+    if row.shape != col.shape:
+        raise ValueError("rf and cf shapes must match")
+    if _structure_kernel is None:
+        return _sample_structure_chunked(
+            field, row, col, quantize=quantize, chunk=chunk
+        )
+    return _sample_structure_fast(field, row, col, quantize=quantize)
 
 
 def offline_continuous_at(

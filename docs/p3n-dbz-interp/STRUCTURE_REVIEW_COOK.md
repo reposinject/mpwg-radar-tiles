@@ -20,6 +20,8 @@ Do not merge this branch for a production ship. Do not set `MPWG_RALA_DBZ_INTERP
 
 Offline STRUCTURE is a dense neighborhood hybrid, not a per-query PCHIP sample. The live tile path evaluates that same function at each pixel's native fractional index on the stored lat/lon axes, then quantizes. It does not build a CONUS-wide dense lattice.
 
+Nearest-cell NO-ECHO is rejected before that evaluation. Echo pixels use the same trend and residual formulas in one compiled loop when `numba` is installed (`pip install 'mpwg-radar[structure]'`, or `pip install 'numba>=0.60'`). Without numba the original chunked NumPy loop runs, unchanged. Empty XYZ candidates are still dropped by `tile_has_echo` and empty-parent pruning before any pixel is sampled. Production `pip install` does not pull numba.
+
 Locks, unchanged from offline acceptance:
 
 - FIX2 trend: 5×5 Gaussian local plane, σ = **0.55** cells, `soft_mode=no_special` (numerical floor 1e-12 only). Soft knots: centers are not snapped back to native dBZ.

@@ -18,6 +18,9 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
+# Compiled STRUCTURE sampler. Production installs omit this. Without numba,
+# the gated review path keeps the original chunked NumPy loop.
+structure = ["numba>=0.60"]
 
 [project.scripts]
 mpwg-radar = "mpwg_radar.cli:main"

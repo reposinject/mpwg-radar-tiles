@@ -341,6 +341,47 @@ def test_review_tile_changes_dbz_and_keeps_p3l_footprint():
     assert np.all(review_px[..., 3][plain_px[..., 3] == 0] == 0)
 
 
+def test_compiled_sampler_matches_chunked_reference_within_quantizer():
+    """Echo-only compiled eval stays inside the q0.5 step of the chunked loop."""
+    from mpwg_radar.structure_recon import _sample_structure_chunked, _structure_kernel
+
+    if _structure_kernel is None:
+        pytest.skip("numba is not installed")
+    rng = np.random.default_rng(20261001)
+    dbz = rng.normal(28.0, 12.0, size=(18, 22))
+    cat = np.full(dbz.shape, CAT_VALID, dtype=np.uint8)
+    cat[:, :2] = CAT_NO_ECHO
+    dbz[:, :2] = np.nan
+    cat[7, 9] = CAT_NO_ECHO
+    dbz[7, 9] = np.nan
+    cat[0, 8] = 0  # missing
+    dbz[0, 8] = np.nan
+    field = prepare_structure_field(dbz, cat, "structure_v1", samples_per_cell=CORE_SAMPLES_PER_CELL)
+    rr = np.linspace(0.2, 16.7, 48)
+    cc = np.linspace(0.2, 20.4, 52)
+    rf, cf = np.meshgrid(rr, cc, indexing="ij")
+    # A query clipped outside the grid must keep the edge-cell category rule.
+    rf = np.concatenate([rf.ravel(), np.array([-3.0, 40.0])])
+    cf = np.concatenate([cf.ravel(), np.array([4.0, -2.0])])
+    ref, ref_cat = _sample_structure_chunked(field, rf, cf, quantize=False)
+    got, got_cat = sample_structure_dbz(field, rf, cf, quantize=False)
+    assert np.array_equal(got_cat, ref_cat)
+    both = np.isfinite(ref) | np.isfinite(got)
+    assert np.array_equal(np.isfinite(ref), np.isfinite(got))
+    if np.any(both):
+        assert np.max(np.abs(ref[both] - got[both])) < 1e-6
+    q_ref, q_ref_cat = _sample_structure_chunked(field, rf, cf, quantize=True)
+    q_got, q_got_cat = sample_structure_dbz(field, rf, cf, quantize=True)
+    assert np.array_equal(q_got_cat, q_ref_cat)
+    assert np.allclose(q_ref, q_got, atol=1e-9, equal_nan=True)
+    # NO-ECHO and missing nearest cells are not samples.
+    hole_r = np.array([7.0, 0.0, 4.0])
+    hole_c = np.array([9.0, 8.0, 0.0])
+    hole_v, hole_c_at = sample_structure_dbz(field, hole_r, hole_c, quantize=True)
+    assert np.all(~np.isfinite(hole_v))
+    assert list(map(int, hole_c_at)) == [CAT_NO_ECHO, 0, CAT_NO_ECHO]
+
+
 def test_render_without_flag_matches_production_splat():
     bounds = tile_bounds(8, 58, 104)
     lat = np.arange(bounds.north, bounds.north - 0.2, -0.01)

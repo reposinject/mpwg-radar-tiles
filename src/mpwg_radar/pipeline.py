@@ -19,6 +19,15 @@ Remote prefixes are deleted only after a manifest that no longer lists them
 has been published, and only after a grace of at least 10 minutes. The pending
 deletes live in ``radar/.publish-state.json`` so a restart does not delete
 early and does not forget a prefix that was already unlisted.
+
+A timestamp that publishes successfully is removed from that list. Delete time
+re-reads the current review or root manifest under ``manifest_lock`` and will
+not remove a prefix that manifest still names. On the review path, catch-up
+does not cook a scan that is already outside the retention window, and a
+``clean/`` LIST deletes untracked objects older than the window plus grace.
+Prefixes containing ``_opt_validate`` or ``_atomic_test``, and anything
+outside the configured review prefix, are left alone. Flags unset: none of
+this runs.
 """
 
 from __future__ import annotations
@@ -28,6 +37,7 @@ import json
 import logging
 import os
 import queue
+import re
 import resource
 import shutil
 import threading
@@ -35,7 +45,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence
+from typing import Callable, Dict, List, Optional, Sequence, Set
 
 import numpy as np
 
@@ -53,6 +63,9 @@ log = logging.getLogger(__name__)
 GRACE_FLOOR_SECONDS = 600.0
 STATE_NAME = ".publish-state.json"
 PIPELINE_WORK = "pipeline-work"
+# Throwaway proof prefixes from the review box. Never reconcile-delete these.
+_RECONCILE_EXCLUDED = ("_opt_validate", "_atomic_test")
+_FRAME_DIR_RE = re.compile(r"^\d{8}T\d{6}Z$")
 
 
 def effective_grace(cfg: CookerConfig) -> float:
@@ -142,10 +155,37 @@ def drop_deleted(state: Dict, prefix: str) -> None:
     ]
 
 
-def sweep_remote_deletes(publisher: R2Publisher, state: Dict, now: datetime) -> List[str]:
-    """Delete prefixes whose grace has elapsed. A failure stays pending."""
+def sweep_remote_deletes(
+    publisher: R2Publisher,
+    state: Dict,
+    now: datetime,
+    *,
+    skip: Optional[Callable[[str], str]] = None,
+) -> List[str]:
+    """Delete prefixes whose grace has elapsed. A failure stays pending.
+
+    ``skip`` returns ``listed``, ``excluded``, or ``unreadable``. Listed and
+    excluded prefixes are not deleted. An unreadable manifest skips the
+    delete and leaves the pending entry for the next pass. ``skip`` is None
+    for the state-file-only helper used when no manifest is in play.
+    """
     deleted: List[str] = []
     for prefix in due_deletes(state, now):
+        if skip is not None:
+            reason = skip(prefix)
+            if reason == "listed":
+                log.info("Retention skip %s; current manifest lists it", prefix)
+                drop_deleted(state, prefix)
+                continue
+            if reason == "excluded":
+                log.info("Retention skip excluded prefix %s", prefix)
+                drop_deleted(state, prefix)
+                continue
+            if reason == "unreadable":
+                log.error(
+                    "Retention skip %s; manifest could not be re-read", prefix
+                )
+                continue
         try:
             publisher.delete_prefix(prefix)
         except Exception as exc:  # noqa: BLE001 — keep the entry and retry
@@ -260,6 +300,133 @@ def _restore_production_manifest(path: Path, previous: Optional[bytes]) -> None:
 
 def frame_prefix(product: ProductSpec, mode: str, frame_id: str) -> str:
     return product.tile_url_template(mode, frame_id).split("/{z}")[0].rstrip("/")
+
+
+def review_scope(cfg: CookerConfig) -> str:
+    """Directory of ``MPWG_REVIEW_MANIFEST_KEY``, or empty when unset.
+
+    Remote reconcile deletes only under this prefix. The production tree is
+    outside it and is not listed.
+    """
+    key = (cfg.review_manifest_key or "").strip().strip("/")
+    if not key or "/" not in key:
+        return ""
+    return key.rsplit("/", 1)[0]
+
+
+def prefix_blocked(prefix: str, scope: str) -> bool:
+    """True for proof prefixes and for anything outside the review tree."""
+    text = str(prefix or "").strip().strip("/")
+    if not text:
+        return True
+    if any(marker in text for marker in _RECONCILE_EXCLUDED):
+        return True
+    root = (scope or "").strip().strip("/")
+    if root and text != root and not text.startswith(root + "/"):
+        return True
+    return False
+
+
+def _strip_publisher_prefix(publisher: R2Publisher, key: str) -> str:
+    root = str(getattr(publisher, "prefix", "") or "").strip("/")
+    if root and (key == root or key.startswith(root + "/")):
+        return key[len(root) :].lstrip("/")
+    return key
+
+
+def _frame_dir_age(segment: str, now: datetime) -> Optional[float]:
+    if not _FRAME_DIR_RE.fullmatch(segment):
+        return None
+    when = datetime.strptime(segment, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+    return (now.astimezone(timezone.utc) - when).total_seconds()
+
+
+def scan_outside_retention(valid_time: datetime, policy, now: datetime) -> bool:
+    """True when a scan would already be dropped by the age window.
+
+    Count-only retention (composite) has no age window. The same bounds as
+    ``apply_retention`` apply: older than ``max_age_seconds``, or more than
+    10 minutes in the future.
+    """
+    if policy.max_age_seconds is None:
+        return False
+    age = (
+        now.astimezone(timezone.utc) - valid_time.astimezone(timezone.utc)
+    ).total_seconds()
+    return age > float(policy.max_age_seconds) or age < -600
+
+
+def _listed_prefixes_from_disk(
+    cfg: CookerConfig, product: ProductSpec, radar_root: Path
+) -> Optional[Set[str]]:
+    """Frame prefixes named by the current review or root manifest.
+
+    ``None`` means the file could not be read. Callers must not delete.
+    """
+    try:
+        if cfg.review_manifest_key:
+            path = radar_root / cfg.review_manifest_key.lstrip("/")
+            if not path.is_file():
+                return set()
+            document = json.loads(path.read_text(encoding="utf-8"))
+            ids = {
+                str(item["id"])
+                for item in (document.get("frames") or [])
+                if isinstance(item, dict) and item.get("id")
+            }
+            tip = document.get("latest_frame")
+            if tip:
+                ids.add(str(tip))
+        else:
+            path = radar_root / "manifest.json"
+            if not path.is_file():
+                return set()
+            document = json.loads(path.read_text(encoding="utf-8"))
+            ids = set()
+            entry = (document.get("products") or {}).get(product.id) or {}
+            for mode in cfg.modes:
+                ids |= _manifest_frame_ids(document, product.id, mode)
+                mode_entry = (entry.get("modes") or {}).get(mode) or {}
+                tip = mode_entry.get("latest_frame") or entry.get("latest_frame")
+                if tip:
+                    ids.add(str(tip))
+    except (OSError, json.JSONDecodeError, UnicodeError, TypeError) as exc:
+        log.error("Could not re-read the manifest for retention (%s)", exc)
+        return None
+    return {
+        frame_prefix(product, mode, frame_id)
+        for frame_id in ids
+        for mode in cfg.modes
+    }
+
+
+def protected_prefixes(
+    cfg: CookerConfig, product: ProductSpec, radar_root: Path
+) -> Optional[Set[str]]:
+    """Re-read the live manifest while holding ``manifest_lock``."""
+    from mpwg_radar.cooker import manifest_lock
+
+    with manifest_lock(radar_root):
+        return _listed_prefixes_from_disk(cfg, product, radar_root)
+
+
+def _retention_skip(
+    cfg: CookerConfig, product: ProductSpec, radar_root: Path
+) -> Callable[[str], str]:
+    """Decide one prefix immediately before it would be deleted."""
+    scope = review_scope(cfg)
+
+    def skip(prefix: str) -> str:
+        if prefix_blocked(prefix, scope):
+            return "excluded"
+        protected = protected_prefixes(cfg, product, radar_root)
+        if protected is None:
+            return "unreadable"
+        if prefix in protected:
+            return "listed"
+        return ""
+
+    return skip
 
 
 @dataclass
@@ -545,6 +712,36 @@ def _schedule_partial(
     save_publish_state(path, state)
 
 
+def _release_published_prefix(
+    cfg: CookerConfig, product: ProductSpec, frame_id: str, radar_root: Path
+) -> None:
+    """Cancel a pending delete once this timestamp is in the live manifest.
+
+    A failed upload queues ``clean/<ts>/``. The retry publishes that same
+    timestamp. Leaving the old ``delete_after`` in place removes the tiles
+    the manifest just named. If this commit did not keep the frame, the
+    pending entry stays so retention can still remove the unlisted upload.
+    """
+    path = state_path(radar_root)
+    if not path.is_file():
+        return
+    prefixes = [frame_prefix(product, mode, frame_id) for mode in cfg.modes]
+    protected = protected_prefixes(cfg, product, radar_root)
+    if protected is None:
+        log.error(
+            "Not clearing pending delete for %s; manifest could not be re-read",
+            frame_id,
+        )
+        return
+    if not any(prefix in protected for prefix in prefixes):
+        return
+    state = load_publish_state(path)
+    for prefix in prefixes:
+        drop_deleted(state, prefix)
+    save_publish_state(path, state)
+    log.info("Cleared pending remote delete for published frame %s", frame_id)
+
+
 def emit_frame_timing(marks: Dict) -> None:
     log.info("frame_timing %s", json.dumps(marks, sort_keys=True, default=str))
 
@@ -652,6 +849,7 @@ def _publish_job(cfg: CookerConfig, job: FrameJob, upload: Optional[bool]) -> Di
             )
         if need_upload:
             _mark_frame_uploaded(cfg, shared, product, job.frame_id)
+        _release_published_prefix(cfg, product, job.frame_id, shared)
         _prune_old_frames(cfg, shared, product)
         _sweep_if_possible(cfg, shared)
         result = _result_from_job(cfg, job, product, shared, promoted)
@@ -880,20 +1078,115 @@ def _manifest_frame_proxy(job: FrameJob) -> _ManifestProxy:
     return _ManifestProxy(job)
 
 
+def reconcile_remote_clean(
+    publisher: R2Publisher,
+    cfg: CookerConfig,
+    product: ProductSpec,
+    radar_root: Path,
+    now: datetime,
+    state: Dict,
+) -> List[str]:
+    """Delete untracked ``clean/`` prefixes older than the window plus grace.
+
+    Runs only under the configured review prefix. A prefix the current
+    manifest lists is spared. So is anything containing ``_opt_validate`` or
+    ``_atomic_test``, and anything outside that review prefix. Objects that
+    are missing from ``.publish-state.json`` are still deleted.
+    """
+    scope = review_scope(cfg)
+    if not scope:
+        return []
+    from mpwg_radar.cooker import frame_retention
+
+    policy = frame_retention(cfg)
+    if not policy.max_age_seconds:
+        return []
+    limit = float(policy.max_age_seconds) + effective_grace(cfg)
+    guard = _retention_skip(cfg, product, radar_root)
+    deleted: List[str] = []
+    for mode in cfg.modes:
+        clean = f"{scope}/{mode}"
+        try:
+            found = publisher.list_object_sizes(clean)
+        except Exception as exc:  # noqa: BLE001 — leave the objects for the next pass
+            log.error("Remote retention list failed for %s (%s)", clean, exc)
+            continue
+        grouped: Dict[str, List[str]] = {}
+        base = clean.strip("/") + "/"
+        for key in found:
+            rel = _strip_publisher_prefix(publisher, key)
+            if not rel.startswith(base):
+                continue
+            segment = rel[len(base) :].split("/", 1)[0]
+            if not segment or segment == "latest":
+                continue
+            child = f"{clean.strip('/')}/{segment}"
+            grouped.setdefault(child, []).append(rel)
+        for child, rels in sorted(grouped.items()):
+            if prefix_blocked(child, scope) or any(
+                prefix_blocked(rel, scope) for rel in rels
+            ):
+                log.info("Retention reconcile sparing excluded prefix %s", child)
+                continue
+            if not child.startswith(scope.strip("/") + "/"):
+                continue
+            segment = child.rsplit("/", 1)[-1]
+            age = _frame_dir_age(segment, now)
+            if age is None or age <= limit:
+                continue
+            reason = guard(child)
+            if reason == "listed":
+                log.info(
+                    "Retention reconcile sparing %s; current manifest lists it",
+                    child,
+                )
+                continue
+            if reason in {"excluded", "unreadable"}:
+                continue
+            try:
+                publisher.delete_prefix(child)
+            except Exception as exc:  # noqa: BLE001
+                log.error("Remote retention reconcile failed for %s (%s)", child, exc)
+                continue
+            drop_deleted(state, child)
+            deleted.append(child)
+            log.info(
+                "Retention reconcile deleted %s (age %.0fs > window+grace %.0fs)",
+                child,
+                age,
+                limit,
+            )
+    return deleted
+
+
 def _sweep_if_possible(cfg: CookerConfig, shared: Path) -> None:
-    path = state_path(shared)
-    if not path.is_file() or not cfg.r2.enabled:
-        return
-    state = load_publish_state(path)
-    if not due_deletes(state, _now()):
+    """Grace deletes, then a review-prefix LIST of ``clean/``.
+
+    An empty pending list does not skip the list. Untracked orphans older
+    than the window plus grace are still removed. Production cooks do not
+    call this.
+    """
+    if not cfg.r2.enabled:
         return
     try:
         publisher = R2Publisher(cfg.r2)
     except Exception as exc:  # noqa: BLE001 — local cooks have no R2
         log.info("Skipping remote retention sweep (%s)", exc)
         return
-    sweep_remote_deletes(publisher, state, _now())
-    save_publish_state(path, state)
+    from mpwg_radar.cooker import _product_for_publish
+
+    product = _product_for_publish(cfg)
+    path = state_path(shared)
+    state = load_publish_state(path) if path.is_file() else empty_state()
+    before = json.dumps(state.get("pending_deletes") or [], sort_keys=True)
+    now = _now()
+    sweep_remote_deletes(
+        publisher, state, now, skip=_retention_skip(cfg, product, shared)
+    )
+    reconcile_remote_clean(publisher, cfg, product, shared, now, state)
+    after = json.dumps(state.get("pending_deletes") or [], sort_keys=True)
+    if after != before:
+        save_publish_state(path, state)
 
 
 def _result_from_job(
@@ -980,6 +1273,7 @@ def publish_serial_frame(
         )
         finished = _now()
         _mark_frame_uploaded(cfg, radar_root, product, frame.frame_id)
+        _release_published_prefix(cfg, product, frame.frame_id, radar_root)
         _prune_old_frames(cfg, radar_root, product)
         _sweep_if_possible(cfg, radar_root)
         return stats, finished
@@ -1133,18 +1427,40 @@ def cook_rala_archive_pipelined(cfg: CookerConfig, upload: Optional[bool]) -> Di
     if not jobs:
         log.warning("RALA archive window was empty; cooking latest scan only")
         return cooker_mod.cook(cfg, source="mrms", upload=upload, archive=False)
+    outside = [
+        job
+        for job in jobs
+        if scan_outside_retention(job.valid_time, policy, now)
+    ]
+    if outside:
+        log.info(
+            "RALA pipeline skipping %d scan(s) already outside the %s-minute retention window",
+            len(outside),
+            cfg.rala_retention_minutes,
+        )
 
     radar_root = cfg.output_dir / "radar"
     product = cooker_mod._product_for_publish(cfg)
     need_upload = cooker_mod._need_upload(cfg, upload)
     palette_version = load_palette(cfg.palette_id).version
-    pending = [
-        job
-        for job in jobs
-        if not cooker_mod._frame_is_complete(
-            cfg, radar_root, product, job.frame_id, need_upload, palette_version=palette_version
-        )
-    ]
+
+    def _still_to_cook(window, moment, attempted_ids) -> List:
+        return [
+            job
+            for job in window
+            if job.frame_id not in attempted_ids
+            and not scan_outside_retention(job.valid_time, policy, moment)
+            and not cooker_mod._frame_is_complete(
+                cfg,
+                radar_root,
+                product,
+                job.frame_id,
+                need_upload,
+                palette_version=palette_version,
+            )
+        ]
+
+    pending = _still_to_cook(jobs, now, set())
     log.info(
         "RALA pipeline window max_age_min=%s max_frames=%s listed=%d pending=%d queue_maxsize=1",
         cfg.rala_retention_minutes,
@@ -1163,6 +1479,7 @@ def cook_rala_archive_pipelined(cfg: CookerConfig, upload: Optional[bool]) -> Di
     current_scans = scans
     window_jobs = jobs
     passes = 0
+    failures = 0
     try:
         while True:
             if passes > 0 and (time.monotonic() - started) >= budget:
@@ -1182,26 +1499,21 @@ def cook_rala_archive_pipelined(cfg: CookerConfig, upload: Optional[bool]) -> Di
                 fresh = []
             if fresh:
                 current_scans = cooker_mod._union_scans(current_scans, fresh)
-            window_jobs = cooker_mod._archive_jobs(current_scans, ncep, policy, _now())
-            pending = [
-                job
-                for job in window_jobs
-                if job.frame_id not in attempted
-                and not cooker_mod._frame_is_complete(
-                    cfg,
-                    radar_root,
-                    product,
-                    job.frame_id,
-                    need_upload,
-                    palette_version=palette_version,
-                )
-            ]
+            moment = _now()
+            window_jobs = cooker_mod._archive_jobs(current_scans, ncep, policy, moment)
+            pending = _still_to_cook(window_jobs, moment, attempted)
             if not pending:
                 break
             job = pending[0]
             attempted.add(job.frame_id)
             passes += 1
             detected = _now()
+            if scan_outside_retention(job.valid_time, policy, detected):
+                log.info(
+                    "RALA pipeline skip frame=%s; outside retention before publish",
+                    job.frame_id,
+                )
+                continue
             log.info(
                 "RALA pipeline process %d frame=%s valid_time=%s window=%d",
                 passes,
@@ -1227,7 +1539,14 @@ def cook_rala_archive_pipelined(cfg: CookerConfig, upload: Optional[bool]) -> Di
                     )
                 decoded_at = _now()
             except Exception as exc:  # noqa: BLE001
+                failures += 1
                 log.error("RALA pipeline frame %s failed (%s); continuing", job.frame_id, exc)
+                continue
+            if scan_outside_retention(loaded.valid_time, policy, decoded_at):
+                log.info(
+                    "RALA pipeline skip frame=%s; outside retention before publish",
+                    loaded.frame_id,
+                )
                 continue
             frame_job = process_loaded_frame(
                 cfg,
@@ -1236,27 +1555,30 @@ def cook_rala_archive_pipelined(cfg: CookerConfig, upload: Optional[bool]) -> Di
                 downloaded_at=downloaded,
                 decoded_at=decoded_at,
             )
+            if scan_outside_retention(frame_job.valid_time, policy, _now()):
+                log.info(
+                    "RALA pipeline skip frame=%s; outside retention before publish",
+                    frame_job.frame_id,
+                )
+                if frame_job.private_root.exists():
+                    shutil.rmtree(frame_job.private_root, ignore_errors=True)
+                continue
             publisher.submit(frame_job)
     finally:
         publisher.close()
 
     cooked = [item for item in publisher.results if item.get("ok")]
     if not cooked:
+        if failures == 0:
+            log.info(
+                "RALA pipeline cooked nothing; listed scans were already outside the retention window"
+            )
+            newest = window_jobs[0] if window_jobs else jobs[0]
+            return _unchanged_archive(cfg, newest, product, radar_root, len(window_jobs))
         raise cooker_mod.IngestError(
             f"RALA archive had pending scan(s) but none cooked (attempted={len(attempted)})"
         )
-    still_open = [
-        job
-        for job in window_jobs
-        if not cooker_mod._frame_is_complete(
-            cfg,
-            radar_root,
-            product,
-            job.frame_id,
-            need_upload,
-            palette_version=palette_version,
-        )
-    ]
+    still_open = _still_to_cook(window_jobs, _now(), set())
     summary = max(cooked, key=lambda item: item.get("valid_time") or "")
     summary = dict(summary)
     summary["archive_cooked"] = len(cooked)

@@ -18,14 +18,17 @@ from mpwg_radar.palette import load_palette
 from mpwg_radar.pipeline import (
     GRACE_FLOOR_SECONDS,
     PublisherQueue,
+    _sweep_if_possible,
     build_review_document,
     drop_deleted,
     due_deletes,
     effective_grace,
     empty_state,
+    frame_prefix,
     load_publish_state,
     note_unlisted,
     save_publish_state,
+    state_path,
     sweep_remote_deletes,
 )
 from mpwg_radar.products import get_product, with_review_tile_prefix
@@ -113,6 +116,28 @@ class RecordingClient:
         for key in keys:
             self.objects.pop(key, None)
         return {}
+
+    def get_paginator(self, name):
+        if name != "list_objects_v2":
+            raise AssertionError(name)
+        client = self
+
+        class _Pager:
+            def paginate(self, **kwargs):
+                token = None
+                while True:
+                    page_kwargs = dict(kwargs)
+                    if token:
+                        page_kwargs["ContinuationToken"] = token
+                    page = client.list_objects_v2(**page_kwargs)
+                    yield page
+                    if not page.get("IsTruncated"):
+                        break
+                    token = page.get("NextContinuationToken")
+                    if not token:
+                        break
+
+        return _Pager()
 
 
 def _publisher(client: RecordingClient, **overrides) -> R2Publisher:
@@ -828,3 +853,221 @@ def test_review_manifest_key_is_the_only_manifest_put(tmp_path: Path, monkeypatc
     assert review["min_zoom"] == 6
     assert review["max_zoom"] == 6
     assert "palette" in review and "retention" in review and review["updated_at"]
+
+
+def _install_r2(monkeypatch, client: RecordingClient) -> None:
+    def fake_init(self, r2cfg):
+        self.cfg = r2cfg
+        self.client = client
+        self.bucket = r2cfg.bucket
+        self.prefix = r2cfg.prefix.strip("/")
+        self.connect_timeout = 10
+        self.read_timeout = 30
+        self.upload_timeout = 60
+        self.object_timeout = 30
+        self.concurrency = 1
+        self.max_attempts = 1
+
+    monkeypatch.setattr(R2Publisher, "__init__", fake_init)
+
+
+def _review_cfg(tmp_path: Path, **overrides) -> CookerConfig:
+    base = dict(
+        upload=True,
+        atomic_publish=True,
+        rala_dbz_interp="structure_v1",
+        publish_latest_alias=False,
+        review_manifest_key="rala-review/structure_v1/manifest.json",
+        r2=_r2(),
+    )
+    base.update(overrides)
+    return _archive_cfg(tmp_path, **base)
+
+
+def test_failed_upload_then_successful_retry_is_not_deleted_after_grace(
+    tmp_path: Path, monkeypatch
+):
+    """A partial prefix queued on failure must not fire after that ts publishes."""
+    when = datetime.now(timezone.utc).replace(microsecond=0)
+    frame = frame_id_for(when)
+    holder = {"client": RecordingClient(fail_on_put=1)}
+
+    def fake_init(self, r2cfg):
+        self.cfg = r2cfg
+        self.client = holder["client"]
+        self.bucket = r2cfg.bucket
+        self.prefix = r2cfg.prefix.strip("/")
+        self.connect_timeout = 10
+        self.read_timeout = 30
+        self.upload_timeout = 60
+        self.object_timeout = 30
+        self.concurrency = 1
+        self.max_attempts = 1
+
+    monkeypatch.setattr(R2Publisher, "__init__", fake_init)
+    cfg = _review_cfg(tmp_path)
+    loaded = synthetic_central_texas(valid_time=when)
+    with pytest.raises(UploadError):
+        cook(cfg, source="synthetic", upload=True, archive=False, loaded_frame=loaded)
+    product = with_review_tile_prefix(get_product("rala"), "structure_v1")
+    prefix = frame_prefix(product, "clean", frame)
+    state = load_publish_state(state_path(tmp_path / "radar"))
+    assert [item["prefix"] for item in state["pending_deletes"]] == [prefix]
+
+    holder["client"] = RecordingClient()
+    cook(
+        cfg,
+        source="synthetic",
+        upload=True,
+        archive=False,
+        loaded_frame=synthetic_central_texas(valid_time=when),
+    )
+    state = load_publish_state(state_path(tmp_path / "radar"))
+    assert all(item.get("prefix") != prefix for item in state["pending_deletes"])
+    live_keys = [key for key in holder["client"].objects if f"/{frame}/" in key]
+    assert live_keys
+
+    class Deleter:
+        def __init__(self):
+            self.prefixes: list[str] = []
+
+        def delete_prefix(self, relative_prefix: str) -> int:
+            self.prefixes.append(relative_prefix)
+            return 1
+
+    deleter = Deleter()
+    deleted = sweep_remote_deletes(
+        deleter, state, datetime.now(timezone.utc) + timedelta(hours=3)
+    )
+    assert prefix not in deleter.prefixes
+    assert prefix not in deleted
+    assert live_keys
+    assert all(key in holder["client"].objects for key in live_keys)
+
+
+def test_delete_time_skips_a_prefix_the_manifest_lists(tmp_path: Path, monkeypatch):
+    frozen = datetime(2026, 10, 6, 18, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr("mpwg_radar.pipeline._now", lambda: frozen)
+    listed = "20260915T160000Z"
+    orphan = "20260915T150000Z"
+    product = with_review_tile_prefix(get_product("rala"), "structure_v1")
+    listed_prefix = frame_prefix(product, "clean", listed)
+    orphan_prefix = frame_prefix(product, "clean", orphan)
+    radar = tmp_path / "radar"
+    review_path = radar / "rala-review" / "structure_v1" / "manifest.json"
+    review_path.parent.mkdir(parents=True)
+    review_path.write_text(
+        json.dumps(
+            {
+                "label": "NOT PRODUCTION",
+                "latest_frame": listed,
+                "frames": [{"id": listed, "valid_time": "2026-09-15T16:00:00+00:00"}],
+            }
+        )
+    )
+    state = empty_state()
+    note_unlisted(
+        state,
+        [listed_prefix, orphan_prefix],
+        frozen - timedelta(hours=1),
+        grace_seconds=600,
+    )
+    save_publish_state(state_path(radar), state)
+    client = RecordingClient()
+    client.objects[f"radar/{listed_prefix}/6/1/2.png"] = 4
+    client.objects[f"radar/{orphan_prefix}/6/1/2.png"] = 4
+    _install_r2(monkeypatch, client)
+    _sweep_if_possible(_review_cfg(tmp_path), radar)
+    assert f"radar/{listed_prefix}/6/1/2.png" in client.objects
+    assert f"radar/{orphan_prefix}/6/1/2.png" not in client.objects
+    deleted_keys = [
+        key
+        for op, keys in client.calls
+        if op == "delete_objects"
+        for key in keys
+    ]
+    assert f"radar/{listed_prefix}/6/1/2.png" not in deleted_keys
+    assert f"radar/{orphan_prefix}/6/1/2.png" in deleted_keys
+
+
+def test_pipeline_catchup_skips_scans_already_outside_retention(
+    tmp_path: Path, monkeypatch
+):
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    fresh = now - timedelta(minutes=2)
+    stale = now - timedelta(minutes=90)
+    _patch_archive(monkeypatch, [fresh, stale])
+    decoded: list[datetime] = []
+    import mpwg_radar.cooker as cooker_mod
+
+    inner = cooker_mod.decode_grib2
+
+    def _decode(path, bbox=None, product=None):
+        frame = inner(path, bbox=bbox, product=product)
+        decoded.append(frame.valid_time)
+        return frame
+
+    monkeypatch.setattr("mpwg_radar.cooker.decode_grib2", _decode)
+    cfg = _archive_cfg(tmp_path, pipeline=True, rala_catchup_budget_seconds=1500)
+    result = cook(cfg, source="mrms", upload=False)
+    assert result["archive_cooked"] == 1
+    assert result["frame_id"] == frame_id_for(fresh)
+    assert decoded == [fresh]
+    mode_dir = tmp_path / "radar" / "rala" / "clean"
+    assert (mode_dir / frame_id_for(fresh) / "frame.json").is_file()
+    assert not (mode_dir / frame_id_for(stale)).exists()
+
+
+def test_list_reconcile_deletes_untracked_old_prefix_and_spares_the_rest(
+    tmp_path: Path, monkeypatch
+):
+    frozen = datetime(2026, 10, 6, 18, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr("mpwg_radar.pipeline._now", lambda: frozen)
+    listed = "20260915T160000Z"
+    untracked = "20261006T100000Z"
+    recent = "20261006T175500Z"
+    marker_frame = "20260101T000000Z"
+    product = with_review_tile_prefix(get_product("rala"), "structure_v1")
+    radar = tmp_path / "radar"
+    review_path = radar / "rala-review" / "structure_v1" / "manifest.json"
+    review_path.parent.mkdir(parents=True)
+    review_path.write_text(
+        json.dumps(
+            {
+                "label": "NOT PRODUCTION",
+                "latest_frame": listed,
+                "frames": [{"id": listed}],
+            }
+        )
+    )
+    # No publish-state entry for the untracked prefix. Reconcile must still see it.
+    client = RecordingClient()
+    listed_key = f"radar/{frame_prefix(product, 'clean', listed)}/6/1/2.png"
+    untracked_key = f"radar/{frame_prefix(product, 'clean', untracked)}/6/1/2.png"
+    recent_key = f"radar/{frame_prefix(product, 'clean', recent)}/6/1/2.png"
+    opt_key = (
+        f"radar/{frame_prefix(product, 'clean', marker_frame)}/_opt_validate/tile.png"
+    )
+    atomic_key = (
+        "radar/rala-review/structure_v1/clean/_atomic_test/"
+        f"{marker_frame}/tile.png"
+    )
+    outside_key = f"radar/rala/clean/{marker_frame}/6/1/2.png"
+    for key in (listed_key, untracked_key, recent_key, opt_key, atomic_key, outside_key):
+        client.objects[key] = 8
+    _install_r2(monkeypatch, client)
+    _sweep_if_possible(_review_cfg(tmp_path), radar)
+    assert untracked_key not in client.objects
+    for spared in (listed_key, recent_key, opt_key, atomic_key, outside_key):
+        assert spared in client.objects
+    deleted_keys = [
+        key
+        for op, keys in client.calls
+        if op == "delete_objects"
+        for key in keys
+    ]
+    assert untracked_key in deleted_keys
+    assert listed_key not in deleted_keys
+    assert opt_key not in deleted_keys
+    assert atomic_key not in deleted_keys
+    assert outside_key not in deleted_keys

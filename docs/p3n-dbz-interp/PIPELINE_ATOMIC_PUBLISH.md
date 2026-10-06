@@ -39,7 +39,7 @@ PUBLISH (one background thread, queue maxsize 1)
   7. List latest/ and delete keys that are not in the new tile set
 ```
 
-On a frame PUT or frame VERIFY failure there is no manifest PUT and no `latest/frame.json` PUT. The previous manifest stays. The partial `clean/<ts>/` prefix is left unreferenced and is removed by retention after the grace. The loop continues with the next frame.
+On a frame PUT or frame VERIFY failure there is no manifest PUT and no `latest/frame.json` PUT. The previous manifest stays. The partial `clean/<ts>/` prefix is left unreferenced and is removed by retention after the grace, unless a later publish of that same timestamp succeeds. That success cancels the pending delete. The loop continues with the next frame.
 
 A latest-stage failure does not PUT `latest/frame.json`. The previous manifest body is PUT back so the published manifest still names the previous complete frame.
 
@@ -60,6 +60,10 @@ With `MPWG_REVIEW_MANIFEST_KEY` set, the review frame is not written into `radar
 Local frame directories are removed only after that frame's publish has finished.
 
 Remote frame prefixes are deleted only after a manifest that no longer lists them has been published, and only after the grace (at least 10 minutes), so a client mid-loop does not hit a deleted frame. Pending deletes are stored in `radar/.publish-state.json`. A restart keeps the original `delete_after` and does not delete twice.
+
+A timestamp that publishes successfully is removed from that pending list. A failed upload of `clean/<ts>/` followed by a successful retry of the same timestamp does not delete the live frame when the original grace expires. At delete time the cooker re-reads the current review manifest, or root `manifest.json` when the review key is unset, under `manifest_lock`, and skips any prefix that manifest lists.
+
+On the gated review path two further rules apply. Catch-up does not cook a scan that would already be outside the retention window when it publishes. Remote retention also lists `clean/` under the configured review prefix and deletes objects older than the window plus grace that the manifest does not name, including prefixes missing from the state file. Any prefix containing `_opt_validate` or `_atomic_test`, and anything outside the configured review prefix, is not deleted. With the flags unset, the production cooker does not list or reconcile.
 
 ## Memory
 

@@ -172,6 +172,27 @@ class CookerConfig:
     # palette. Both publish under ``rala-review/<token>/`` so a review upload
     # does not replace ``rala/clean/latest``. Not read by the systemd unit.
     rala_dbz_interp: str = ""
+    # Opt-in overlap for the review cooker. Unset: the serial archive loop.
+    # Do not set this on the t4g public cooker or in /etc/mpwg-radar.env.
+    pipeline: bool = False
+    # Opt-in PROCESS → UPLOAD → VERIFY → MANIFEST → LATEST order.
+    # Unset: frame → root → latest (including latest/frame.json) → copies,
+    # then the caller PUTs manifest.json. The pipeline publish stage uses
+    # this order even when the flag is off, because that stage exists only
+    # when ``pipeline`` is on.
+    atomic_publish: bool = False
+    # Default True keeps today's ``latest/`` alias. Set False
+    # (``MPWG_PUBLISH_LATEST_ALIAS=0``) to skip the alias and point the
+    # manifest ``latest`` template at the tip frame's timestamped prefix.
+    publish_latest_alias: bool = True
+    # Relative to ``R2_PREFIX``. Empty: the production manifest path.
+    # When set, the review cooker PUTs only this key and never
+    # ``manifest.json`` at the prefix root.
+    review_manifest_key: str = ""
+    # Remote prefix deletes wait at least this long after a manifest that
+    # no longer lists them has been published. Floor is 10 minutes.
+    # Used only by the gated publish path.
+    retention_grace_seconds: float = 600.0
     user_agent: str = "mpwg-radar-tiles/1.0 (+https://github.com/reposinject/mpwg-radar-tiles)"
 
     @property
@@ -303,6 +324,17 @@ def load_config(overrides: Optional[dict] = None) -> CookerConfig:
         display_min_dbz=display_min,
         rala_dbz_interp=normalize_rala_dbz_interp(
             os.environ.get("MPWG_RALA_DBZ_INTERP")
+        ),
+        pipeline=_truthy(os.environ.get("MPWG_PIPELINE"), False),
+        atomic_publish=_truthy(os.environ.get("MPWG_ATOMIC_PUBLISH"), False),
+        publish_latest_alias=_truthy(
+            os.environ.get("MPWG_PUBLISH_LATEST_ALIAS"), True
+        ),
+        review_manifest_key=os.environ.get("MPWG_REVIEW_MANIFEST_KEY", "")
+        .strip()
+        .lstrip("/"),
+        retention_grace_seconds=float(
+            os.environ.get("MPWG_RETENTION_GRACE_SECONDS", "600")
         ),
     )
     if overrides:

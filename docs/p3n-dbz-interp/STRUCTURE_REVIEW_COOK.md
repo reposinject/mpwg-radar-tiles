@@ -131,3 +131,5 @@ CONUS echo is a fraction of the mosaic, not the whole grid. On a stormy day, hun
 ## What this host cannot finish
 
 The map app is not in this repo. EC2 has to run the cook against live R2 credentials from this branch. Lovable (or whoever owns the map style) has to set the review tile URL above. This cooker does not edit `/etc/mpwg-radar.env` and does not start the production service with STRUCTURE or FIX2.
+
+Overlap (process one frame while the previous one uploads), the atomic PUT order, and a review manifest that is not `radar/manifest.json` are a separate opt-in. Flags, the call order, the 404-as-transparent rule for a pruned `latest/` tile, and the m8g command are in `PIPELINE_ATOMIC_PUBLISH.md`. Leave those flags unset on the t4g public cooker.

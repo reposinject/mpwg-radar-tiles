@@ -337,76 +337,26 @@ def cook(
         write_colorbar(palette, radar_root / "colorbar.png")
     cook_finished_at = _now()
     cook_seconds = time.monotonic() - started
-    # Local manifest first (no upload stamp). A failed upload must not look published.
-    _write_manifest(
-        cfg,
-        palette,
-        radar_root,
-        frame,
-        mode_summaries,
-        product,
-        cook_finished_at=cook_finished_at,
-        upload_finished_at=None,
-        promoted=promoted_any,
-    )
-    stale = _stale_frame_ids(cfg, radar_root, product)
-    _prune_old_frames(cfg, radar_root, product)
-
     upload_stats = UploadStats()
     upload_finished_at: Optional[datetime] = None
-    if should_upload and cfg.r2.enabled:
-        publisher = R2Publisher(cfg.r2)
-        # Tiles are product-prefixed. Hold the manifest lock only around the
-        # final merge + manifest PUT so a parallel RALA/composite cook cannot
-        # publish a stale products block.
-        upload_stats = publisher.upload_frame(
-            radar_root,
-            frame_id=frame.frame_id,
-            modes=cfg.modes,
-            product_id=product.id,
-            include_manifest=False,
-            include_latest=promoted_any,
-            # Promoted RALA frames already PUT the frame tiles. Copy those
-            # bytes onto latest/ server-side instead of uploading them twice.
-            # A review latest is rala-review/.../latest, not rala/clean/latest.
-            copy_latest=(product.id == "rala" and promoted_any),
-            tile_prefix=product.tile_prefix if _is_review_publish(product) else None,
+    if _gated_publish(cfg):
+        # Opt-in only. The production block below is not used.
+        from mpwg_radar.pipeline import publish_serial_frame
+
+        upload_stats, upload_finished_at = publish_serial_frame(
+            cfg,
+            frame=frame,
+            palette=palette,
+            radar_root=radar_root,
+            product=product,
+            mode_summaries=mode_summaries,
+            promoted=promoted_any,
+            cook_finished_at=cook_finished_at,
+            should_upload=should_upload,
+            consumer_manifest_live=consumer_manifest_live,
         )
-        # Stamp the manifest just before its PUT. The latency line below
-        # uses the clock after that PUT returns. A review cook PUTs the
-        # manifest only when this tree already advertised the consumer path,
-        # so a side output directory cannot replace the live CDN manifest.
-        manifest_upload_started = _now()
-        manifest_stats = UploadStats()
-        put_review_manifest = (not _is_review_publish(product)) or consumer_manifest_live
-        if _is_review_publish(product) and not consumer_manifest_live:
-            log.warning(
-                "Review cook will not PUT manifest.json. products.rala.latest "
-                "on this tree is not %s. Review tiles still upload under %s. "
-                "The production CDN manifest is left as it is.",
-                _consumer_rala_latest(cfg.modes[0]),
-                product.tile_prefix,
-            )
-
-        def _put_manifest() -> None:
-            nonlocal manifest_stats
-            if not put_review_manifest:
-                if promoted_any and _is_review_publish(product):
-                    (radar_root / _review_publish_marker(product)).write_text(
-                        frame.frame_id + "\n"
-                    )
-                return
-            manifest_stats = publisher.upload_manifest(radar_root)
-            if promoted_any:
-                if _is_review_publish(product):
-                    (radar_root / _review_publish_marker(product)).write_text(
-                        frame.frame_id + "\n"
-                    )
-                else:
-                    (radar_root / f".published-{product.id}").write_text(
-                        frame.frame_id + "\n"
-                    )
-
+    else:
+        # Local manifest first (no upload stamp). A failed upload must not look published.
         _write_manifest(
             cfg,
             palette,
@@ -415,18 +365,97 @@ def cook(
             mode_summaries,
             product,
             cook_finished_at=cook_finished_at,
-            upload_finished_at=manifest_upload_started if put_review_manifest else None,
-            before_unlock=_put_manifest,
+            upload_finished_at=None,
             promoted=promoted_any,
         )
-        upload_finished_at = _now()
-        _add_upload_stats(upload_stats, manifest_stats)
-        _mark_frame_uploaded(cfg, radar_root, product, frame.frame_id)
-        for mode, ids in stale.items():
-            for stale_id in ids:
-                publisher.delete_prefix(product.tile_url_template(mode, stale_id).split("/{z}")[0])
-    elif should_upload and not cfg.r2.enabled:
-        log.info("R2 env not set — cooked locally, skipped upload")
+        stale = _stale_frame_ids(cfg, radar_root, product)
+        _prune_old_frames(cfg, radar_root, product)
+
+        if should_upload and cfg.r2.enabled:
+            publisher = R2Publisher(cfg.r2)
+            # Tiles are product-prefixed. Hold the manifest lock only around the
+            # final merge + manifest PUT so a parallel RALA/composite cook cannot
+            # publish a stale products block.
+            upload_stats = publisher.upload_frame(
+                radar_root,
+                frame_id=frame.frame_id,
+                modes=cfg.modes,
+                product_id=product.id,
+                include_manifest=False,
+                include_latest=promoted_any and cfg.publish_latest_alias,
+                # Promoted RALA frames already PUT the frame tiles. Copy those
+                # bytes onto latest/ server-side instead of uploading them twice.
+                # A review latest is rala-review/.../latest, not rala/clean/latest.
+                copy_latest=(
+                    product.id == "rala"
+                    and promoted_any
+                    and cfg.publish_latest_alias
+                ),
+                tile_prefix=product.tile_prefix if _is_review_publish(product) else None,
+            )
+            # Stamp the manifest just before its PUT. The latency line below
+            # uses the clock after that PUT returns. A review cook PUTs the
+            # manifest only when this tree already advertised the consumer path,
+            # so a side output directory cannot replace the live CDN manifest.
+            manifest_upload_started = _now()
+            manifest_stats = UploadStats()
+            put_review_manifest = (not _is_review_publish(product)) or consumer_manifest_live
+            if _is_review_publish(product) and not consumer_manifest_live:
+                log.warning(
+                    "Review cook will not PUT manifest.json. products.rala.latest "
+                    "on this tree is not %s. Review tiles still upload under %s. "
+                    "The production CDN manifest is left as it is.",
+                    _consumer_rala_latest(cfg.modes[0]),
+                    product.tile_prefix,
+                )
+
+            def _put_manifest() -> None:
+                nonlocal manifest_stats
+                if not put_review_manifest:
+                    if promoted_any and _is_review_publish(product):
+                        (radar_root / _review_publish_marker(product)).write_text(
+                            frame.frame_id + "\n"
+                        )
+                    return
+                manifest_stats = publisher.upload_manifest(radar_root)
+                if promoted_any:
+                    if _is_review_publish(product):
+                        (radar_root / _review_publish_marker(product)).write_text(
+                            frame.frame_id + "\n"
+                        )
+                    else:
+                        (radar_root / f".published-{product.id}").write_text(
+                            frame.frame_id + "\n"
+                        )
+
+            latest_slot = None
+            if not cfg.publish_latest_alias:
+                latest_slot = _latest_id(
+                    product.mode_dir(radar_root, cfg.modes[0]) / "latest"
+                ) or frame.frame_id
+            _write_manifest(
+                cfg,
+                palette,
+                radar_root,
+                frame,
+                mode_summaries,
+                product,
+                cook_finished_at=cook_finished_at,
+                upload_finished_at=manifest_upload_started if put_review_manifest else None,
+                before_unlock=_put_manifest,
+                promoted=promoted_any,
+                public_latest_slot=latest_slot,
+            )
+            upload_finished_at = _now()
+            _add_upload_stats(upload_stats, manifest_stats)
+            _mark_frame_uploaded(cfg, radar_root, product, frame.frame_id)
+            for mode, ids in stale.items():
+                for stale_id in ids:
+                    publisher.delete_prefix(
+                        product.tile_url_template(mode, stale_id).split("/{z}")[0]
+                    )
+        elif should_upload and not cfg.r2.enabled:
+            log.info("R2 env not set — cooked locally, skipped upload")
 
     finished = upload_finished_at or cook_finished_at
     lag = (finished - frame.valid_time.astimezone(timezone.utc)).total_seconds()
@@ -650,6 +679,7 @@ def _write_mode(
     mode: str,
     radar_root: Path,
     product: ProductSpec,
+    stage_marks: Optional[Dict] = None,
 ) -> Tuple[Dict, bool]:
     mode_dir = product.mode_dir(radar_root, mode)
     frame_dir = mode_dir / frame.frame_id
@@ -667,6 +697,7 @@ def _write_mode(
         sample_mode=product.sample_mode,
         workers=max(1, int(cfg.tile_workers)),
         dbz_interp=cfg.rala_dbz_interp if product.sample_mode == "masked-splat" else "",
+        stage_marks=stage_marks,
     )
     mode_spec = {
         "min_dbz": MODES[mode].min_dbz if product.apply_dbz_floor else None,
@@ -768,6 +799,7 @@ def _write_manifest(
     before_unlock=None,
     promoted: bool = True,
     _locked: bool = False,
+    public_latest_slot: Optional[str] = None,
 ) -> Dict:
     """Merge this product into manifest.json.
 
@@ -786,6 +818,7 @@ def _write_manifest(
                 upload_finished_at=upload_finished_at,
                 promoted=promoted,
                 _locked=True,
+                public_latest_slot=public_latest_slot,
             )
             if before_unlock is not None:
                 before_unlock()
@@ -808,9 +841,17 @@ def _write_manifest(
             _list_frames(mode_dir, product, mode),
             policy,
         )
-        tip = _latest_id(mode_dir / "latest") or summary["id"]
+        directory_tip = _latest_id(mode_dir / "latest")
+        if public_latest_slot:
+            # Alias is off. The directory's ``latest/`` is not the public tip.
+            tip = summary["id"] if promoted or not directory_tip else directory_tip
+        else:
+            tip = directory_tip or summary["id"]
+        # None keeps the historical ``latest`` alias. A frame id (gated
+        # ``MPWG_PUBLISH_LATEST_ALIAS=0``) points clients at that scan.
+        slot = public_latest_slot or "latest"
         this_modes[mode] = {
-            "latest": product.tile_url_template(mode, "latest"),
+            "latest": product.tile_url_template(mode, slot),
             "latest_frame": tip,
             "frames": frames,
         }
@@ -835,15 +876,16 @@ def _write_manifest(
             else:
                 review_frame = previous["latest_frame"]
             review_frames = (this_modes.get(cfg.modes[0]) or {}).get("frames") or []
+            review_slot = public_latest_slot or "latest"
             review_entry = {
                 "label": "NOT PRODUCTION",
                 "dbz_interp": token,
                 "spatial": SPATIAL_REVISION,
                 "palette_version": palette.version,
-                "latest": product.tile_url_template(cfg.modes[0], "latest"),
+                "latest": product.tile_url_template(cfg.modes[0], review_slot),
                 "latest_frame": review_frame,
                 "frame_json": (
-                    f"{product.tile_prefix}/{cfg.modes[0]}/latest/frame.json"
+                    f"{product.tile_prefix}/{cfg.modes[0]}/{review_slot}/frame.json"
                 ),
                 "consumer_latest": consumer_latest,
                 "frames": review_frames,
@@ -860,7 +902,9 @@ def _write_manifest(
             entry["palette"] = palette.as_dict()
             entry["display_min_dbz"] = palette.min_dbz
             entry["modes"] = this_modes
-            entry["latest"] = product.tile_url_template(cfg.modes[0], "latest")
+            entry["latest"] = product.tile_url_template(
+                cfg.modes[0], public_latest_slot or "latest"
+            )
             # Per-product native zoom. Top-level min/max stay the composite
             # band so a composite client does not request z9 keys that were
             # never cooked. RALA clients read products.rala.max_zoom (and
@@ -1130,6 +1174,16 @@ def _archive_jobs(
     return ordered
 
 
+def _gated_publish(cfg: CookerConfig) -> bool:
+    """True when this cook must not advance the shared manifest early.
+
+    ``MPWG_PIPELINE`` has its own archive loop. ``MPWG_ATOMIC_PUBLISH`` and
+    ``MPWG_REVIEW_MANIFEST_KEY`` change the serial ``cook()`` publish stage.
+    All three default off, so the production path does not call them.
+    """
+    return bool(cfg.atomic_publish or cfg.review_manifest_key)
+
+
 def _cook_rala_archive(cfg: CookerConfig, upload: Optional[bool]) -> Dict:
     """Cook every real RALA scan still missing from the rolling window.
 
@@ -1137,7 +1191,14 @@ def _cook_rala_archive(cfg: CookerConfig, upload: Optional[bool]) -> Dict:
     backward with consecutive scans. Scans are not subsampled. A per-run time
     budget only defers the rest to the next timer fire; it does not drop them
     until they age out of the window.
+
+    ``MPWG_PIPELINE=1`` overlaps one publish with the next process. Unset,
+    this function is the serial loop below.
     """
+    if cfg.pipeline:
+        from mpwg_radar.pipeline import cook_rala_archive_pipelined
+
+        return cook_rala_archive_pipelined(cfg, upload)
     policy = frame_retention(cfg)
     max_age = timedelta(seconds=policy.max_age_seconds or 0)
     try:

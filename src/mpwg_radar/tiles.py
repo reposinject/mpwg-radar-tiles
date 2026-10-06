@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
@@ -591,6 +592,19 @@ def tile_has_echo(frame: ReflectivityFrame, z: int, x: int, y: int) -> bool:
 _PNG_COMPRESS_LEVEL = 6
 
 
+def _mark_stage(stage_marks: Optional[Dict[str, str]], key: str) -> None:
+    """Record an ISO timestamp. Absent when the caller did not ask.
+
+    Start keys keep the first stamp so a second mode cannot hide the
+    prepare that already ran. End keys take the latest stamp.
+    """
+    if stage_marks is None:
+        return
+    if key.endswith("_start") and stage_marks.get(key):
+        return
+    stage_marks[key] = datetime.now(timezone.utc).isoformat()
+
+
 def write_tiles(
     frame: ReflectivityFrame,
     palette: Palette,
@@ -603,6 +617,7 @@ def write_tiles(
     sample_mode: str = SAMPLE_NEAREST,
     workers: int = 1,
     dbz_interp: str = "",
+    stage_marks: Optional[Dict[str, str]] = None,
 ) -> Dict:
     """Write `{z}/{x}/{y}.png` under out_dir. Returns tile stats.
 
@@ -616,6 +631,7 @@ def write_tiles(
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     structure_field = None
+    _mark_stage(stage_marks, "prepare_start")
     if dbz_interp in RALA_DBZ_INTERP_REVIEW and sample_mode == SAMPLE_MASKED_SPLAT:
         log.warning(
             "EXPERIMENTAL RALA dBZ interp %s is ON for this tile write. "
@@ -636,6 +652,7 @@ def write_tiles(
             dbz_interp,
             samples_per_cell=CORE_SAMPLES_PER_CELL,
         )
+    _mark_stage(stage_marks, "prepare_end")
     skipped = 0
     jobs: List[Tuple[int, int, int]] = []
     # An empty parent tile has no echo in any child. Mark it and skip the
@@ -652,6 +669,8 @@ def write_tiles(
                 skipped += 1
                 continue
         jobs.append((z, x, y))
+
+    _mark_stage(stage_marks, "tiles_start")
 
     def _one(item: Tuple[int, int, int]) -> Optional[str]:
         z, x, y = item
@@ -697,6 +716,7 @@ def write_tiles(
     finally:
         if worker_n > 1 and len(jobs) > 1:
             pool.shutdown(wait=True)
+    _mark_stage(stage_marks, "tiles_end")
     written = len(paths)
     stats = {
         "written": written,

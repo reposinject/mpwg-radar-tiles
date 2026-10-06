@@ -159,6 +159,34 @@ def test_rala_upload_concurrency_ignores_shared_cap(monkeypatch):
     assert composite.tile_workers == 1
 
 
+def test_pipeline_flags_default_off(monkeypatch):
+    monkeypatch.delenv("MPWG_PIPELINE", raising=False)
+    monkeypatch.delenv("MPWG_ATOMIC_PUBLISH", raising=False)
+    monkeypatch.delenv("MPWG_PUBLISH_LATEST_ALIAS", raising=False)
+    monkeypatch.delenv("MPWG_REVIEW_MANIFEST_KEY", raising=False)
+    monkeypatch.delenv("MPWG_RETENTION_GRACE_SECONDS", raising=False)
+    cfg = load_config()
+    assert cfg.pipeline is False
+    assert cfg.atomic_publish is False
+    assert cfg.publish_latest_alias is True
+    assert cfg.review_manifest_key == ""
+    assert cfg.retention_grace_seconds == 600
+    monkeypatch.setenv("MPWG_PIPELINE", "1")
+    monkeypatch.setenv("MPWG_ATOMIC_PUBLISH", "true")
+    monkeypatch.setenv("MPWG_PUBLISH_LATEST_ALIAS", "0")
+    monkeypatch.setenv(
+        "MPWG_REVIEW_MANIFEST_KEY", "rala-review/structure_v1/manifest.json"
+    )
+    monkeypatch.setenv("MPWG_RETENTION_GRACE_SECONDS", "30")
+    gated = load_config()
+    assert gated.pipeline is True
+    assert gated.atomic_publish is True
+    assert gated.publish_latest_alias is False
+    assert gated.review_manifest_key == "rala-review/structure_v1/manifest.json"
+    # The floor is applied when a delete is scheduled, not by hiding the setting.
+    assert gated.retention_grace_seconds == 30
+
+
 def test_load_config_upload_timeouts(monkeypatch):
     monkeypatch.setenv("MPWG_UPLOAD_CONNECT_TIMEOUT", "8")
     monkeypatch.setenv("MPWG_UPLOAD_READ_TIMEOUT", "12")

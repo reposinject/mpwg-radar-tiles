@@ -658,7 +658,7 @@ def _write_mode(
         skip_empty=cfg.skip_empty_tiles,
         sample_mode=product.sample_mode,
         workers=max(1, int(cfg.tile_workers)),
-        dbz_interp=cfg.rala_dbz_interp if product.sample_mode == "masked-splat" else "",
+        dbz_interp=cfg.rala_dbz_interp if product.id == "rala" and product.sample_mode == "masked-splat" else "",
     )
     mode_spec = {
         "min_dbz": MODES[mode].min_dbz if product.apply_dbz_floor else None,
@@ -682,7 +682,7 @@ def _write_mode(
     }
     # Review marker only. The spatial stamp stays p3l either way, so an
     # ordinary cook's frame.json does not grow a new key.
-    if product.sample_mode == "masked-splat" and cfg.rala_dbz_interp:
+    if product.id == "rala" and product.sample_mode == "masked-splat" and cfg.rala_dbz_interp:
         mode_spec["dbz_interp"] = cfg.rala_dbz_interp
     meta = {
         "id": frame.frame_id,

@@ -528,10 +528,21 @@ def render_tile(
             held[sampled_cat != CAT_VALID] = np.float32(np.nan)
             sampled = held
         rgba = palette.colorize(sampled, category=sampled_cat)
-        # Palette alpha (wispy low dBZ) times the in-mask stamp. Clear-air
-        # queries have edge_scale 0, so they cannot pick up a neighbor's color.
-        faded = rgba[..., 3].astype(np.float32) * edge_scale
-        rgba[..., 3] = np.clip(np.rint(faded), 0, 255).astype(np.uint8)
+        # Binary echo mask (oct29c): soft edge_scale × alpha after RGB colorize
+        # produced a bright yellow fringe around green echoes (MapLibre linear
+        # resampling of non-premultiplied partial-alpha yellows from the 30 dBZ
+        # stop bleeding at edges). Keep full palette alpha wherever the nearest
+        # cell is valid echo; clear-air stays 0. Then premultiply RGB by alpha
+        # so any remaining client filter cannot invent false 30+ colors.
+        echo_mask = (sampled_cat == CAT_VALID) & (edge_scale > 0)
+        alpha = rgba[..., 3].astype(np.float32)
+        alpha = np.where(echo_mask, alpha, np.float32(0.0))
+        rgba[..., 3] = np.clip(np.rint(alpha), 0, 255).astype(np.uint8)
+        a = rgba[..., 3].astype(np.float32) / np.float32(255.0)
+        for c in (0, 1, 2):
+            rgba[..., c] = np.clip(
+                np.rint(rgba[..., c].astype(np.float32) * a), 0, 255
+            ).astype(np.uint8)
     elif sample_mode == SAMPLE_NEAREST:
         if frame.category is not None:
             sampled, sampled_cat_f = sample_nearest_many(

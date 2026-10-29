@@ -129,11 +129,38 @@ COMPOSITE = ProductSpec(
     quality_controlled=True,
     apply_dbz_floor=True,
     apply_despeckle=True,
-    sample_mode=SAMPLE_NEAREST,
+    # oct29c: masked-splat (p3l) — crisp bins, not mushy bilinear. Grid
+    # smooth off so cores keep gradients. Soft RGB/alpha edge fade removed
+    # in render_tile (binary mask + premultiply) to kill yellow fringe.
+    sample_mode=SAMPLE_MASKED_SPLAT,
+    apply_grid_smooth=False,
     description=(
         "QC column-max composite mosaic. Production default. Display cutoff "
         "15 dBZ (Clean palette); Clean mode still drops <~10 dBZ clutter on "
-        "the mode grid."
+        "the mode grid. Sampling is mask-clipped splat (p3l): nearest-cell "
+        "footprint, in-mask dBZ seams only, binary echo mask (no soft alpha "
+        "fade that caused yellow RGB/alpha fringes)."
+    ),
+    attribution="NOAA MRMS MergedReflectivityQCComposite",
+)
+
+# Rollback mirror: nearest-cell cook under previous/ so ?radarVersion=previous
+# and one-switch revert keep working without re-cooking history.
+COMPOSITE_PREVIOUS = ProductSpec(
+    id="composite-previous",
+    mrms_name="MergedReflectivityQCComposite",
+    ncep_dir="MergedReflectivityQCComposite",
+    s3_prefix="CONUS/MergedReflectivityQCComposite_00.50",
+    palette_id="mpwg-clean-2026-09",
+    tile_prefix="previous",
+    quality_controlled=True,
+    apply_dbz_floor=True,
+    apply_despeckle=True,
+    sample_mode=SAMPLE_NEAREST,
+    apply_grid_smooth=True,
+    description=(
+        "Nearest-cell composite rollback path (previous/). Same MRMS product "
+        "and Clean palette as production; cooked beside improved composite."
     ),
     attribution="NOAA MRMS MergedReflectivityQCComposite",
 )
@@ -183,6 +210,7 @@ MERGED_RALA_UNQC = ProductSpec(
 
 PRODUCTS: Dict[str, ProductSpec] = {
     COMPOSITE.id: COMPOSITE,
+    COMPOSITE_PREVIOUS.id: COMPOSITE_PREVIOUS,
     RALA.id: RALA,
 }
 

@@ -1,0 +1,39 @@
+MPWG composite recovery plan (owner t953u)
+Production publish is authorized. This plan does not merge or deploy the git repo onto the box.
+
+What is running today
+The installed editable tree /workspace/mpwg-radar-tiles is the only cooker to patch.
+Do not replace it with stock git src/. Public tip is still the pre-repair frame.
+The private EC2 instance and the retired EC2 instance stay untouched.
+
+Durability, from the box inventory
+PID 1 is tini. No supervisord, runit, s6, cron, or systemd user manager is available.
+No boot or autostart path was found. nohup and flock are available. /workspace is writable.
+The launcher ignores SIGHUP and `start` runs it under nohup, so a disconnected task does not stop it.
+It does not survive a box or container restart. After reboot, start the same command again.
+Failed cooks are retried inside the process (15s, then doubled up to 300s).
+There is no automatic re-PUT of an older manifest. A deletion line in the cook log stops the loop instead of retrying.
+
+Playback versus saved objects
+MPWG_RECLAIM stays unset. The patch then does not remove local frame directories and does not delete R2 prefixes.
+MPWG_KEEP_DBZ=0 stops new npz files. Files already under dbz/ stay.
+The playback manifest uses MPWG_RETENTION_FRAMES=30 after the transition.
+The first publish sets MPWG_PIN_FRAME_IDS_FILE to every composite id in the current public manifest, so that publish still lists those ids.
+Later cooks do not set the pin. The 30-frame list ages. Objects for aged ids stay on disk and on R2.
+The manifest is not an unbounded directory listing.
+
+Apply on the box
+  install -d /workspace/mpwg-recovery/bin /workspace/mpwg-recovery/logs /workspace/mpwg-recovery/state /workspace/mpwg-recovery/backup
+  install -m 0755 recovery/mpwg-recovery-launch.sh /workspace/mpwg-recovery/bin/mpwg-recovery-launch.sh
+  install -m 0755 recovery/mpwg_recovery_check.py /workspace/mpwg-recovery/bin/mpwg_recovery_check.py
+  cd /workspace/mpwg-radar-tiles
+  patch -p1 --forward --dry-run < /path/to/mpwg-reclaim-default-off.patch
+  patch -p1 --forward < /path/to/mpwg-reclaim-default-off.patch
+  /workspace/mpwg-recovery/bin/mpwg-recovery-launch.sh start
+
+Logs: /workspace/mpwg-radar-logs is not used. Logs are /workspace/mpwg-recovery/logs.
+Lock: /workspace/mpwg-recovery/state/.writer.lock once. The cooker still locks radar/.manifest.lock only around its manifest PUT.
+Headroom: stop before a cook when /workspace has under 10 GiB free. Do not delete to free space.
+Cadence: 180 seconds after each successful cook. That is the documented composite timer interval, not a recovered /tmp sleep. Composite publish is latest-only, so some two-minute NOAA scans are not cooked.
+Validation: each new public frame must match render mpwg-r61mb-2026-10, palette mpwg-clean-2026-10-61, masked-bilinear, smooth_kind none, 29 dBZ #65D65A, 30 dBZ #F4F20D, and local png count must equal stats.written. Three advancing public scans write state/healthy and the loop keeps running.
+Missing public frame.json files are copied from the public CDN into the existing clean tree after a backup under /workspace/mpwg-recovery/backup. The count is computed. It is not assumed to be 7.

@@ -1,0 +1,102 @@
+diff --git a/src/mpwg_radar/cooker.py b/src/mpwg_radar/cooker.py
+--- a/src/mpwg_radar/cooker.py	2026-11-07 01:02:44.388914800 +0000
++++ b/src/mpwg_radar/cooker.py	2026-11-07 21:13:22.622114779 +0000
+@@ -63,6 +63,64 @@
+     max_age_seconds: Optional[float] = None
+ 
+ 
++def _reclaim_enabled() -> bool:
++    """Local frame removal and R2 prefix deletion. Default off.
++
++    Unset, empty, and any value other than 1/true/yes/on stay off.
++    Playback length is separate and still follows retention_frames.
++    """
++    return os.environ.get("MPWG_RECLAIM", "").strip().lower() in {"1", "true", "yes", "on"}
++
++
++def _pinned_frame_ids() -> set[str]:
++    """Optional one-transition ids that must remain in the playback manifest.
++
++    This does not keep every file on disk in the manifest, and it does not
++    delete anything. The launcher sets it for the first publish only.
++    """
++    raw = os.environ.get("MPWG_PIN_FRAME_IDS_FILE", "").strip()
++    if not raw:
++        return set()
++    path = Path(raw)
++    if not path.is_file():
++        log.warning("MPWG_PIN_FRAME_IDS_FILE missing path=%s", path)
++        return set()
++    ids: set[str] = set()
++    for line in path.read_text(encoding="utf-8").splitlines():
++        item = line.strip()
++        if item and not item.startswith("#"):
++            ids.add(item)
++    return ids
++
++
++def _with_pinned_frames(
++    frames: List[Dict],
++    mode_dir: Path,
++    product: ProductSpec,
++    mode: str,
++) -> List[Dict]:
++    """Union pinned composite ids into the bounded playback list."""
++    if product.id != "composite":
++        return frames
++    pins = _pinned_frame_ids()
++    if not pins:
++        return frames
++    have = {item.get("id") for item in frames}
++    missing = pins - have
++    if not missing:
++        return frames
++    catalog = {item["id"]: item for item in _list_frames(mode_dir, product, mode)}
++    merged = list(frames)
++    for frame_id in sorted(missing):
++        item = catalog.get(frame_id)
++        if item is None:
++            log.warning("pinned composite frame not on disk id=%s", frame_id)
++            continue
++        merged.append(item)
++    merged.sort(key=lambda item: item.get("valid_time") or "", reverse=True)
++    return merged
++
++
+ def frame_retention(cfg: CookerConfig) -> FrameRetention:
+     """RALA uses its own window. Composite stays on ``retention_frames``."""
+     if cfg.product_id == "rala":
+@@ -352,7 +410,14 @@
+         promoted=promoted_any,
+     )
+     stale = _stale_frame_ids(cfg, radar_root, product)
+-    _prune_old_frames(cfg, radar_root, product)
++    if product.id == "composite" and not _reclaim_enabled():
++        log.info(
++            "MPWG_RECLAIM off; composite objects kept, playback cap=%s",
++            cfg.retention_frames,
++        )
++        stale = {mode: [] for mode in cfg.modes}
++    else:
++        _prune_old_frames(cfg, radar_root, product)
+ 
+     upload_stats = UploadStats()
+     upload_finished_at: Optional[datetime] = None
+@@ -806,9 +871,14 @@
+     for summary in mode_summaries:
+         mode = summary["mode"]
+         mode_dir = product.mode_dir(radar_root, mode)
+-        frames = apply_retention(
+-            _list_frames(mode_dir, product, mode),
+-            policy,
++        frames = _with_pinned_frames(
++            apply_retention(
++                _list_frames(mode_dir, product, mode),
++                policy,
++            ),
++            mode_dir,
++            product,
++            mode,
+         )
+         tip = _latest_id(mode_dir / "latest") or summary["id"]
+         this_modes[mode] = {

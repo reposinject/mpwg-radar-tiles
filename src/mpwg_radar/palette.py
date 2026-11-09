@@ -156,6 +156,9 @@ class Palette:
     version: str = ""
     description: str = ""
     display_min_dbz: Optional[float] = None
+    # "linear" (default): RGB interpolate between stops.
+    # "floor": discrete 1 dBZ LUT — color = stop at floor(dbz). James oct29d.
+    quantization: str = "linear"
 
     def __post_init__(self) -> None:
         self.stops = sorted(self.stops, key=lambda s: s.dbz)
@@ -178,11 +181,11 @@ class Palette:
 
         Only CAT_VALID cells with finite dBZ at/above display_min_dbz get
         color. NaNs, no-echo, and missing/no-coverage stay transparent and
-        are never treated as 0 dBZ. Between anchor stops, RGBA is linearly
-        interpolated against the actual dBZ value (0.1 dBZ LUT, half-up
-        index). Values are not quantized to 5 or 10 dBZ buckets. Samples
-        below the first stop but still at/above display_min clamp to that
-        stop. There is no normalize/rescale step.
+        are never treated as 0 dBZ. quantization=linear: RGBA interpolated
+        between stops (0.1 dBZ LUT, half-up). quantization=floor: discrete
+        1 dBZ colors via floor(dbz) — no RGB blur between steps (oct29d).
+        Samples below the first stop but still at/above display_min clamp
+        to that stop. There is no normalize/rescale step.
         """
         flat = np.asarray(dbz, dtype=np.float32)
         out = np.zeros(flat.shape + (4,), dtype=np.uint8)
@@ -204,11 +207,19 @@ class Palette:
         return out
 
     def lut_index(self, dbz: np.ndarray) -> np.ndarray:
-        """0.1 dBZ bucket index. Half-up, float64, same math colorize() uses."""
+        """0.1 dBZ bucket index. Same math colorize() uses.
+
+        linear: half-up. floor (oct29d 61-shade): floor so 29.99 stays green
+        and only >=30 hits yellow — half-up would round 29.95+ into the 30
+        bucket and break the green guard.
+        """
         x = (np.asarray(dbz, dtype=np.float64) - float(self._lut_dbz0)) / float(
             self._lut_step
         )
-        idx = np.floor(x + 0.5).astype(np.int64)
+        if self.quantization == "floor":
+            idx = np.floor(x).astype(np.int64)
+        else:
+            idx = np.floor(x + 0.5).astype(np.int64)
         return np.clip(idx, 0, len(self._lut) - 1).astype(np.int32)
 
     def bucket_dbz(self, index: int) -> float:
@@ -226,6 +237,7 @@ class Palette:
             version=self.version,
             description=self.description,
             display_min_dbz=float(display_min_dbz),
+            quantization=self.quantization,
         )
 
     def colorbar(
@@ -261,12 +273,20 @@ class Palette:
         }
 
     def _interpolate_rgba(self, dbz: float) -> np.ndarray:
-        """Linear RGB interpolation between neighboring anchors at `dbz`."""
+        """Map one dBZ to RGBA. linear = RGB blend; floor = discrete stop."""
         xs = [s.dbz for s in self.stops]
         ys = np.array([s.rgba for s in self.stops], dtype=np.float32)
         cutoff = self.min_dbz
         if dbz < cutoff:
             return np.array(self.below_min, dtype=np.uint8)
+        if self.quantization == "floor":
+            # James oct29d: index = floor(R) for 15<=R<76. Clamp to last stop.
+            if dbz < xs[0]:
+                return _round_u8(ys[0])
+            floored = float(np.floor(dbz))
+            j = int(np.searchsorted(xs, floored, side="right") - 1)
+            j = max(0, min(j, len(xs) - 1))
+            return _round_u8(ys[j])
         if dbz <= xs[0]:
             return _round_u8(ys[0])
         if dbz >= xs[-1]:
@@ -317,6 +337,9 @@ def _load_json(payload: dict) -> Palette:
     ]
     below = tuple(int(c) for c in payload.get("below_min", [0, 0, 0, 0]))
     display_min = payload.get("display_min_dbz")
+    quant = str(payload.get("quantization", "linear")).lower()
+    if quant not in ("linear", "floor"):
+        quant = "linear"
     return Palette(
         id=payload.get("id", "custom"),
         name=payload.get("name", "custom"),
@@ -326,6 +349,7 @@ def _load_json(payload: dict) -> Palette:
         version=str(payload.get("version", "")),
         description=str(payload.get("description", "")),
         display_min_dbz=float(display_min) if display_min is not None else None,
+        quantization=quant,
     )
 
 

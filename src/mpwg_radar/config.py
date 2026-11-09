@@ -24,6 +24,53 @@ from mpwg_radar.products import (
 )
 
 
+# Review-only RALA samplers. Empty means production p3l splat. Either token
+# replaces numerical dBZ before the p3k LUT and leaves category, the
+# clear-air alpha, the spatial stamp, and the palette alone.
+# A is the wider bilinear ramp. B is the tighter bounded ramp. Both keep
+# peak-hold on local maxima. D is the monotone cubic Hermite from the
+# offline harness, with no peak-hold and no width knob. Production stays off.
+RALA_DBZ_INTERP_BILINEAR_PEAK_HOLD = "bilinear_peak_hold"
+RALA_DBZ_INTERP_TIGHT_PEAK_HOLD = "tight_peak_hold"
+RALA_DBZ_INTERP_MONOTONE_PCHIP = "monotone_pchip"
+# A and B still build a peak mask. D must not: the harness sampler has no hold.
+RALA_DBZ_INTERP_PEAK_HOLD = frozenset(
+    {
+        RALA_DBZ_INTERP_BILINEAR_PEAK_HOLD,
+        RALA_DBZ_INTERP_TIGHT_PEAK_HOLD,
+    }
+)
+RALA_DBZ_INTERP_REVIEW = frozenset(
+    {
+        RALA_DBZ_INTERP_BILINEAR_PEAK_HOLD,
+        RALA_DBZ_INTERP_TIGHT_PEAK_HOLD,
+        RALA_DBZ_INTERP_MONOTONE_PCHIP,
+    }
+)
+_RALA_DBZ_INTERP_OFF = frozenset({"", "0", "off", "none", "false", "p3l"})
+
+
+def normalize_rala_dbz_interp(raw: Optional[str]) -> str:
+    """Map ``MPWG_RALA_DBZ_INTERP`` to ``""`` (production) or a review token.
+
+    Hyphens are accepted so ``bilinear-peak-hold`` and ``bilinear_peak_hold``
+    are the same switch. Anything else raises: a typo must not silently paint
+    production p3l during a review cook, and must not enable an unknown sampler.
+    """
+    text = (raw or "").strip().lower().replace("-", "_")
+    if text in _RALA_DBZ_INTERP_OFF:
+        return ""
+    if text in RALA_DBZ_INTERP_REVIEW:
+        return text
+    raise ValueError(
+        f"Unknown MPWG_RALA_DBZ_INTERP={raw!r}. Omit it for production p3l. "
+        f"Review cooks: {RALA_DBZ_INTERP_BILINEAR_PEAK_HOLD} (A), "
+        f"{RALA_DBZ_INTERP_TIGHT_PEAK_HOLD} (B), or "
+        f"{RALA_DBZ_INTERP_MONOTONE_PCHIP} (D). "
+        "Do not set any of these on the production cooker."
+    )
+
+
 def _truthy(value: Optional[str], default: bool = False) -> bool:
     if value is None:
         return default
@@ -131,6 +178,12 @@ class CookerConfig:
     r2: R2Config = field(default_factory=R2Config)
     palette_id: str = "mpwg-clean-2026-09"
     display_min_dbz: Optional[float] = None
+    # Empty: RALA tiles use the p3l splat. ``bilinear_peak_hold`` (A),
+    # ``tight_peak_hold`` (B), and ``monotone_pchip`` (D) are review
+    # samplers only. None of them change SPATIAL_REVISION or the palette.
+    # D publishes under ``rala-review/monotone_pchip/`` so a review upload
+    # does not replace ``rala/clean/latest``.
+    rala_dbz_interp: str = ""
     user_agent: str = "mpwg-radar-tiles/1.0 (+https://github.com/reposinject/mpwg-radar-tiles)"
 
     @property
@@ -157,8 +210,10 @@ class CookerConfig:
             raise ValueError(
                 f"Unknown product {self.product_id!r}. Cookable: {list(COOKABLE_PRODUCT_IDS)}"
             )
+        self.rala_dbz_interp = normalize_rala_dbz_interp(self.rala_dbz_interp)
 
     def __post_init__(self) -> None:
+        self.rala_dbz_interp = normalize_rala_dbz_interp(self.rala_dbz_interp)
         if self.product_id == DEFAULT_PRODUCT_ID:
             return
         spec = get_product(self.product_id)
@@ -258,6 +313,9 @@ def load_config(overrides: Optional[dict] = None) -> CookerConfig:
         ),
         palette_id=palette_id,
         display_min_dbz=display_min,
+        rala_dbz_interp=normalize_rala_dbz_interp(
+            os.environ.get("MPWG_RALA_DBZ_INTERP")
+        ),
     )
     if overrides:
         for key, value in overrides.items():

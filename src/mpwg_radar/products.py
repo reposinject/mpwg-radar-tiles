@@ -28,7 +28,7 @@ GRIB2 sometimes also uses -3 for no coverage (format-dependent; see flag table).
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Dict, Optional
 
 
@@ -124,16 +124,44 @@ COMPOSITE = ProductSpec(
     mrms_name="MergedReflectivityQCComposite",
     ncep_dir="MergedReflectivityQCComposite",
     s3_prefix="CONUS/MergedReflectivityQCComposite_00.50",
-    palette_id="mpwg-clean-2026-09",
+    palette_id="mpwg-clean-2026-10-61",
     tile_prefix="",  # production URLs stay radar/clean/... until James signs off
     quality_controlled=True,
     apply_dbz_floor=True,
     apply_despeckle=True,
-    sample_mode=SAMPLE_NEAREST,
+    # oct29d: masked-bilinear — interpolate numeric dBZ among valid samples,
+    # then floor LUT colorize. Soft coverage alpha (premultiplied) rounds
+    # storm silhouettes without RGB blur. Client keeps nearest resampling so
+    # MapLibre cannot invent false yellow from partial-alpha 30 dBZ fringes.
+    sample_mode=SAMPLE_MASKED_BILINEAR,
+    apply_grid_smooth=False,
     description=(
         "QC column-max composite mosaic. Production default. Display cutoff "
-        "15 dBZ (Clean palette); Clean mode still drops <~10 dBZ clutter on "
-        "the mode grid."
+        "15 dBZ (61-shade Clean floor LUT); Clean mode still drops <~10 dBZ "
+        "clutter on the mode grid. Sampling is masked-bilinear: numeric dBZ "
+        "upsample in-mask, soft coverage alpha + premultiply for rounded "
+        "edges (no RGB blur, no artificial precip)."
+    ),
+    attribution="NOAA MRMS MergedReflectivityQCComposite",
+)
+
+# Rollback mirror: nearest-cell cook under previous/ so ?radarVersion=previous
+# and one-switch revert keep working without re-cooking history.
+COMPOSITE_PREVIOUS = ProductSpec(
+    id="composite-previous",
+    mrms_name="MergedReflectivityQCComposite",
+    ncep_dir="MergedReflectivityQCComposite",
+    s3_prefix="CONUS/MergedReflectivityQCComposite_00.50",
+    palette_id="mpwg-clean-2026-09",
+    tile_prefix="previous",
+    quality_controlled=True,
+    apply_dbz_floor=True,
+    apply_despeckle=True,
+    sample_mode=SAMPLE_NEAREST,
+    apply_grid_smooth=True,
+    description=(
+        "Nearest-cell composite rollback path (previous/). Same MRMS product "
+        "and Clean palette as production; cooked beside improved composite."
     ),
     attribution="NOAA MRMS MergedReflectivityQCComposite",
 )
@@ -183,10 +211,27 @@ MERGED_RALA_UNQC = ProductSpec(
 
 PRODUCTS: Dict[str, ProductSpec] = {
     COMPOSITE.id: COMPOSITE,
+    COMPOSITE_PREVIOUS.id: COMPOSITE_PREVIOUS,
     RALA.id: RALA,
 }
 
 COOKABLE_PRODUCT_IDS = tuple(PRODUCTS.keys())
+
+
+# Parallel CDN tree for the labeled D review cook. Consumer RALA stays on
+# ``rala/clean/latest``. A production cook's uploader matches the ``rala/``
+# prefix only, so objects under this root are not part of that upload.
+RALA_REVIEW_ROOT = "rala-review"
+
+
+def rala_review_tile_prefix(token: str) -> str:
+    """Tile prefix for one review token, e.g. ``rala-review/monotone_pchip``."""
+    return f"{RALA_REVIEW_ROOT}/{token}"
+
+
+def with_review_tile_prefix(product: ProductSpec, token: str) -> ProductSpec:
+    """Same product spec, publishing under the labeled review prefix."""
+    return replace(product, tile_prefix=rala_review_tile_prefix(token))
 
 
 def get_product(product_id: Optional[str]) -> ProductSpec:
